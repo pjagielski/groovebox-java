@@ -1,0 +1,9 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+*.wav
+/loops/
+/samples/
+jam*.properties

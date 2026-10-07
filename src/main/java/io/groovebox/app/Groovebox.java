@@ -1,0 +1,1071 @@
+package io.groovebox.app;
+
+import javafx.animation.AnimationTimer;
+import javafx.application.Application;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Cursor;
+import javafx.scene.Node;
+import javafx.scene.Scene;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.ContextMenu;
+import javafx.scene.control.Label;
+import javafx.scene.control.Menu;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.RadioMenuItem;
+import javafx.scene.control.SeparatorMenuItem;
+import javafx.scene.control.ToggleGroup;
+import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
+import javafx.scene.paint.Color;
+import javafx.stage.FileChooser;
+import javafx.stage.Stage;
+import io.groovebox.session.Sounds;
+import io.groovebox.audio.AudioEngine;
+import io.groovebox.audio.Sample;
+import io.groovebox.audio.SampleBank;
+import io.groovebox.model.Note;
+import io.groovebox.session.GridRow;
+import io.groovebox.session.Instrument;
+import io.groovebox.session.DemoJam;
+import io.groovebox.session.Playback;
+import io.groovebox.session.Session;
+import io.groovebox.session.StudioTrack;
+import io.groovebox.controls.Glyph;
+import io.groovebox.controls.PanelKnob;
+import io.groovebox.controls.StudioIcon;
+import io.groovebox.controls.StudioPanels;
+import io.groovebox.synth.ChannelFilter;
+import io.groovebox.synth.EffectParams;
+import io.groovebox.synth.LiveEffects;
+import io.groovebox.synth.SynthParams;
+import io.groovebox.synth.SynthSetting;
+import io.groovebox.synth.Waveform;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.DoubleConsumer;
+import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
+
+/**
+ * The jam as a box to play rather than a desk to write at: a screen, eight knobs, sixteen pads
+ * and a chip per track. The same {@link Session} and {@link Playback} as the studio's, so what is
+ * heard here is what the studio would play.
+ *
+ * <p>A chip per track, as the studio has them, picks what the rest is about: the drums, whose
+ * selected row's steps the pads are and a press on one cycles, or a melody, whose bar the pads
+ * show note by note and a press on one sounds. Which drum row is a matter for the screen, where
+ * the whole kit is: a click on a row picks it, and so do the up and down arrows. The knobs
+ * are the chip's: a drum row's level, a melody's synth. The tempo sits between play and the
+ * effects, where a hand reaches for all three. Space plays and stops.
+ *
+ * <p>Starts from {@code --config <file>} when given one - its melody, its tempo and its drums -
+ * and otherwise from {@link DemoJam}, made in code.
+ */
+public final class Groovebox extends Application {
+    // how long a melody pad sounds its note: a voice is made with its length, not let go of
+    private static final double AUDITION_SECONDS = 0.4;
+    private static final double KNOBS_WIDTH = 290;
+    private static final double GAP = 20;
+    /** How wide the box is inside its edge: the screen and the knobs beside it. */
+    private static final double INSIDE = Screen.WIDTH + GAP + KNOBS_WIDTH;
+    private static final double PLAY_WIDTH = 64;
+    private static final double STRIP_GAP = 10;
+    private static final double LONGEST_DECAY_MILLIS = 2000;
+    // a loop's filter all the way open is no filter at all, which is where a loop starts
+    private static final double OPEN_CUTOFF = 18000;
+    /** How a loop can be cut, each a length of slice in beats: the eighth is where one starts. */
+    private static final Map<String, Double> CUTS = new LinkedHashMap<>();
+    private static final double FIRST_CUT = 0.5;
+    private static final int PEAK_BUCKETS = 2048;
+
+    static {
+        CUTS.put("1/4", 1.0);
+        CUTS.put("1/8", 0.5);
+        CUTS.put("1/16", 0.25);
+    }
+
+    private final Session session = new Session();
+    private Playback playback;
+    private Part selected = new Part.DrumRow(0);
+    // the drum row the drums chip goes back to, so leaving the drums for a melody does not lose it
+    private int drumRow;
+    // the page of sixteen shown while the jam is stopped, turned with the arrows; while it plays,
+    // the page is the one the playhead is on
+    private int viewPage;
+    // the slice of the selected loop picked on the screen, which a pad then plays; -1 for none
+    private int chosenSlice = -1;
+    // where the last loop came from, which is where the next chooser opens
+    private Path loopFolder;
+    // each loop's waveform as the screen draws it, worked out once per recording
+    private final Map<Sample, float[]> peaks = new IdentityHashMap<>();
+
+    private final Screen screen = new Screen();
+    private final Pads pads = new Pads(INSIDE, this::pressed, this::otherPressed);
+    private final HBox chips = new HBox(8);
+    private final GridPane knobs = new GridPane();
+    private final Button play = new Button();
+    private final Label status = new Label("stopped");
+    private final Tempo tempo = new Tempo(Strip.HEIGHT, next -> {
+        session.setBpm(next);
+        shown = "";
+    });
+    private final List<Strip> strips = new ArrayList<>();
+    // the knobs' second page, printed in orange under each of them; latched, not held: a mouse
+    // cannot hold one button and turn a knob at the same time
+    private final Button shift = new Button("shift");
+    private boolean shifted;
+    // what was last drawn, so a frame that changes nothing draws nothing
+    private String shown = "";
+
+    @Override
+    public void start(Stage stage) throws Exception {
+        playback = new Playback(
+                new AudioEngine(SampleBank.load(Path.of("samples"), AudioEngine.DEFAULT_SAMPLE_RATE)), session::jam);
+        Path config = configPath();
+        if (config != null) {
+            session.load(config);
+        } else {
+            DemoJam.startIn(session);
+        }
+
+        Scene scene = new Scene(layout());
+        scene.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+            if (event.getCode() == KeyCode.SPACE) {
+                togglePlayback();
+                event.consume();
+            } else if (event.getCode() == KeyCode.TAB) {
+                // Tab, since Shift on the keyboard already turns a knob in fine steps
+                toggleShift();
+                event.consume();
+            }
+        });
+        // a handler rather than a filter: a knob with focus keeps its arrows to itself
+        scene.addEventHandler(KeyEvent.KEY_PRESSED, event -> {
+            if (selected instanceof Part.DrumRow(int row)
+                    && (event.getCode() == KeyCode.UP || event.getCode() == KeyCode.DOWN)) {
+                int next = row + (event.getCode() == KeyCode.UP ? -1 : 1);
+                if (next >= 0 && next < session.rows().size()) {
+                    select(new Part.DrumRow(next));
+                }
+                event.consume();
+            } else if (event.getCode() == KeyCode.LEFT || event.getCode() == KeyCode.RIGHT) {
+                // while it plays the page follows the playhead; stopped, the arrows turn it
+                if (beat() < 0) {
+                    viewPage = Math.max(0, viewPage + (event.getCode() == KeyCode.RIGHT ? 1 : -1));
+                    shown = "";
+                }
+                event.consume();
+            }
+        });
+        pads.setDragging(this::dragged, this::dropped);
+        stage.setScene(scene);
+        stage.setTitle("Groovebox");
+        stage.getIcons().setAll(StudioIcon.sizes());
+        stage.setResizable(false);
+        select(selected);
+        stage.show();
+        frames().start();
+    }
+
+    @Override
+    public void stop() {
+        strips.forEach(Strip::release);
+        playback.close();
+    }
+
+    /** The jam config named by {@code --config}; null when none is. */
+    private Path configPath() {
+        List<String> args = getParameters().getRaw();
+        int index = args.indexOf("--config");
+        return index >= 0 && index + 1 < args.size() ? Path.of(args.get(index + 1)) : null;
+    }
+
+    // ---- what a hand does
+
+    private void togglePlayback() {
+        if (playback.playing()) {
+            strips.forEach(Strip::release);
+            playback.stop();
+        } else {
+            try {
+                playback.play();
+            } catch (Exception failure) {
+                showError(failure);
+            }
+        }
+        showTransport();
+    }
+
+    /** A pad pressed: a drum row's step cycles through its accents, a melody's note sounds. */
+    private void pressed(int pad) {
+        double beat = beat();
+        switch (selected) {
+            case Part.DrumRow(int row) -> {
+                GridRow shownRow = session.rows().get(row);
+                int step = Steps.page(shownRow, beat) * Steps.PADS + pad;
+                if (step < shownRow.accents().length) {
+                    session.cycleAccent(row, step);
+                    // a pad is played, not written: heard in this pass of the loop, not the next
+                    playback.takeNow();
+                    shown = "";
+                }
+            }
+            case Part.Melody(int track) -> {
+                if (!(session.tracks().get(track) instanceof StudioTrack.Melody melody)
+                        || melody.instrument() == null) {
+                    return;
+                }
+                double start = melodyBar(beat) * (double) Session.BEATS_PER_BAR + pad * Steps.PAD_BEATS;
+                for (Note note : session.notesOf(melody.source(), session.loopBeats())) {
+                    if (note.beat() >= start - 1e-9 && note.beat() < start + Steps.PAD_BEATS - 1e-9
+                            && Steps.pitchOf(note) >= 0) {
+                        audition(melody.instrument(), Steps.pitchOf(note), note.velocity());
+                    }
+                }
+            }
+            case Part.Loop(int track) -> {
+                StudioTrack.Loop loop = loopAt(track);
+                List<Integer> order = loop.slicing().order();
+                int step = loopPage(loop, beat) * Steps.PADS + pad;
+                if (step >= order.size()) {
+                    return;
+                }
+                int now = order.get(step);
+                // the slice picked on the screen, and pressed again the step's own; with none
+                // picked, the next slice round
+                int next = chosenSlice >= 0 ? (now == chosenSlice ? step : chosenSlice)
+                        : now < 0 ? step : (now + 1) % loop.slicing().count();
+                changeStep(track, loop, step, next);
+            }
+        }
+    }
+
+    /**
+     * The other button on a pad: a drum row's step emptied, a loop's step made a rest - or given
+     * back its own slice, when it is one already. A melody's pads only sound.
+     */
+    private void otherPressed(int pad) {
+        double beat = beat();
+        switch (selected) {
+            case Part.DrumRow(int row) -> {
+                GridRow shownRow = session.rows().get(row);
+                int step = Steps.page(shownRow, beat) * Steps.PADS + pad;
+                if (step < shownRow.accents().length && shownRow.accents()[step] > 0) {
+                    session.remember();
+                    session.changeRow(row, r -> r.withAccent(step, 0));
+                    playback.takeNow();
+                    shown = "";
+                }
+            }
+            case Part.Loop(int track) -> {
+                StudioTrack.Loop loop = loopAt(track);
+                int step = loopPage(loop, beat) * Steps.PADS + pad;
+                if (step < loop.slicing().order().size()) {
+                    changeStep(track, loop, step, loop.slicing().order().get(step) < 0 ? step : -1);
+                }
+            }
+            case Part.Melody melody -> {
+            }
+        }
+    }
+
+    /** The slice a pad of the selected loop carries when dragged; nothing to drag on another view. */
+    private int dragged(int pad) {
+        if (!(selected instanceof Part.Loop(int track))) {
+            return Pads.NOTHING;
+        }
+        StudioTrack.Loop loop = loopAt(track);
+        int step = loopPage(loop, beat()) * Steps.PADS + pad;
+        return step < loop.slicing().order().size() ? loop.slicing().order().get(step) : Pads.NOTHING;
+    }
+
+    /** A slice dropped on a pad of the selected loop: that step plays it from now on. */
+    private void dropped(int pad, int slice) {
+        if (!(selected instanceof Part.Loop(int track))) {
+            return;
+        }
+        StudioTrack.Loop loop = loopAt(track);
+        int step = loopPage(loop, beat()) * Steps.PADS + pad;
+        if (step < loop.slicing().order().size()) {
+            changeStep(track, loop, step, slice);
+        }
+    }
+
+    /** A loop's step given another slice: heard in this pass, like a drum's pad. */
+    private void changeStep(int track, StudioTrack.Loop loop, int step, int slice) {
+        session.changeLoop(track, loop.cutInto(loop.slicing().with(step, slice)));
+        playback.takeNow();
+        shown = "";
+    }
+
+    /** A loop cut again into slices {@code beats} long, keeping its order where it still fits. */
+    private void recut(int track, double beats) {
+        StudioTrack.Loop loop = loopAt(track);
+        if (loop.slicing().beats() == beats) {
+            return;
+        }
+        session.changeLoop(track, loop.cutInto(StudioTrack.Slicing.of(loop.audio(), beats, true,
+                passBeats(loop), loop.slicing().order())));
+        playback.takeNow();
+        chosenSlice = -1;
+        viewPage = 0;
+        shown = "";
+    }
+
+    /** A slice heard on its own, at the rate and through the channel it plays at in the jam. */
+    private void trySlice(StudioTrack.Loop loop, int slice) {
+        List<Integer> starts = loop.slicing().starts();
+        int from = starts.get(slice);
+        int until = slice + 1 < starts.size() ? starts.get(slice + 1) : loop.audio().frameCount();
+        double passFrames = passBeats(loop) * 60.0 / session.bpm() * AudioEngine.DEFAULT_SAMPLE_RATE;
+        try {
+            playback.listening().audition(loop.audio(), from, until, loop.audio().frameCount() / passFrames,
+                    0.9f, loop.channel());
+        } catch (Exception failure) {
+            showError(failure);
+        }
+    }
+
+    /** "+ loop": a recording chosen from the disk, added as a track cut into eighths. */
+    private void chooseLoop(Node owner) {
+        Path file = pickLoop(owner);
+        if (file != null) {
+            addLoop(file);
+        }
+    }
+
+    /** A loop's other recording: the same track, its channel and its cut, playing something else. */
+    private void changeLoopFile(Node owner, int track) {
+        Path file = pickLoop(owner);
+        if (file == null) {
+            return;
+        }
+        try {
+            session.changeLoopFile(track, file);
+            loopFolder = file.getParent();
+            playback.takeNow();
+            chosenSlice = -1;
+            viewPage = 0;
+            select(new Part.Loop(track));
+        } catch (Exception failure) {
+            showError(failure);
+        }
+    }
+
+    /** A recording chosen from the disk; null when the chooser was closed with nothing picked. */
+    private Path pickLoop(Node owner) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("A loop to play in time with the jam");
+        chooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("Audio files", "*.wav", "*.aif", "*.aiff", "*.au"));
+        File start = loopsFolder();
+        if (start != null) {
+            chooser.setInitialDirectory(start);
+        }
+        File chosen = chooser.showOpenDialog(owner.getScene().getWindow());
+        return chosen == null ? null : chosen.toPath().toAbsolutePath().normalize();
+    }
+
+    /** A track taken out, heard gone at once: the box goes back to the drums. */
+    private void removeTrack(int track) {
+        session.removeTrack(track);
+        playback.takeNow();
+        select(new Part.DrumRow(drumRow));
+    }
+
+    /** The grid drawn from another of the jams' drum patterns, heard from now on. */
+    private void usePattern(String name) {
+        session.usePattern(name);
+        playback.takeNow();
+        drumRow = 0;
+        select(new Part.DrumRow(0));
+    }
+
+    /**
+     * A loop added and picked, heard from where the jam is now rather than from its next loop. It
+     * comes cut into eighths, played as recorded, so the pads have its slices to put in another
+     * order from the start.
+     */
+    void addLoop(Path file) {
+        try {
+            StudioTrack.Loop loop = session.newLoop(file);
+            loop = loop.cutInto(StudioTrack.Slicing.of(loop.audio(), FIRST_CUT, true, passBeats(loop), List.of()));
+            session.addTrack(loop);
+            loopFolder = file.getParent();
+            playback.takeNow();
+            select(new Part.Loop(session.tracks().size() - 1));
+        } catch (Exception failure) {
+            showError(failure);
+        }
+    }
+
+    /**
+     * Where the loop chooser opens: where the last loop came from, {@code --loops <dir>}, the jam's
+     * {@code loopsFolder}, or loops/.
+     */
+    private File loopsFolder() {
+        List<Path> where = new ArrayList<>();
+        if (loopFolder != null) {
+            where.add(loopFolder);
+        }
+        List<String> args = getParameters().getRaw();
+        int index = args.indexOf("--loops");
+        if (index >= 0 && index + 1 < args.size()) {
+            where.add(Path.of(args.get(index + 1)));
+        }
+        if (session.config() != null && session.config().loopsFolder() != null) {
+            where.add(session.config().loopsFolder());
+        }
+        where.add(Path.of("loops").toAbsolutePath());
+        return where.stream().filter(Files::isDirectory).findFirst().map(Path::toFile).orElse(null);
+    }
+
+    /** The slice of the selected loop drawn at {@code x} on the screen; -1 for none, or another view. */
+    private int sliceOnScreen(double x) {
+        if (!(selected instanceof Part.Loop(int track))) {
+            return -1;
+        }
+        StudioTrack.Loop loop = loopAt(track);
+        return Screen.loopSliceAt(x, loopPage(loop, beat()), loop.slicing().order().size(),
+                loop.audio().frameCount(), loop.slicing().starts());
+    }
+
+    private StudioTrack.Loop loopAt(int track) {
+        return (StudioTrack.Loop) session.tracks().get(track);
+    }
+
+    private static double passBeats(StudioTrack.Loop loop) {
+        return loop.bars() * Session.BEATS_PER_BAR;
+    }
+
+    /** The page of a loop's steps on the pads: the playhead's while it plays, the arrows' while not. */
+    private int loopPage(StudioTrack.Loop loop, double beat) {
+        int count = loop.slicing().order().size();
+        int step = Steps.loopStep(beat, passBeats(loop), count);
+        return step >= 0 ? step / Steps.PADS : Math.min(viewPage, Steps.pages(count) - 1);
+    }
+
+    /** The bar of the melody on the pads: the playhead's while it plays, the arrows' while not. */
+    private int melodyBar(double beat) {
+        int bars = Math.max(1, (int) Math.ceil(session.bars()));
+        return beat >= 0 ? Steps.bar(beat) % bars : Math.min(viewPage, bars - 1);
+    }
+
+    private void audition(Instrument instrument, int pitch, float velocity) {
+        try {
+            playback.listening().audition(instrument.synth(), pitch, AUDITION_SECONDS, velocity);
+        } catch (Exception failure) {
+            showError(failure);
+        }
+    }
+
+    /** A chip or a drum row picked: the screen, the pads and the knobs are about it from now on. */
+    private void select(Part next) {
+        if (!next.equals(selected)) {
+            viewPage = 0;
+            chosenSlice = -1;
+        }
+        selected = next;
+        if (next instanceof Part.DrumRow(int row)) {
+            drumRow = row;
+        }
+        showChips();
+        showKnobs();
+        shown = "";
+    }
+
+    // ---- drawing
+
+    /** Every frame: the screen and the pads, redrawn when what they show has moved. */
+    private AnimationTimer frames() {
+        return new AnimationTimer() {
+            @Override
+            public void handle(long now) {
+                if (playback.live() != null && playback.live().failure().isPresent()) {
+                    Throwable failure = playback.live().failure().get();
+                    togglePlayback();
+                    showError(failure);
+                }
+                double beat = beat();
+                // a melody's playhead moves within a pad, so it is drawn every frame while it plays
+                String key = selected + " " + (!(selected instanceof Part.DrumRow) && beat >= 0
+                        ? String.valueOf(beat) : Steps.sixteenth(beat) + " " + Steps.bar(beat));
+                if (key.equals(shown)) {
+                    return;
+                }
+                shown = key;
+                draw(beat);
+            }
+        };
+    }
+
+    private void draw(double beat) {
+        switch (selected) {
+            case Part.DrumRow(int row) -> {
+                List<GridRow> rows = session.rows();
+                screen.drawDrums(rows, row, beat);
+                GridRow shownRow = rows.get(row);
+                int page = Steps.page(shownRow, beat);
+                Pads.Pad[] shownPads = new Pads.Pad[Steps.PADS];
+                for (int pad = 0; pad < Steps.PADS; pad++) {
+                    int step = page * Steps.PADS + pad;
+                    float accent = step < shownRow.accents().length ? shownRow.accents()[step] : -1;
+                    shownPads[pad] = accent < 0 ? Pads.Pad.OFF
+                            : accent == 0 ? Pads.Pad.EMPTY : Pads.Pad.hit("", accent);
+                }
+                pads.show(shownPads);
+                int current = Steps.current(shownRow, beat);
+                pads.light(current < 0 || current / Steps.PADS != page ? -1 : current % Steps.PADS);
+            }
+            case Part.Melody(int track) -> {
+                StudioTrack.Melody melody = (StudioTrack.Melody) session.tracks().get(track);
+                List<Note> line = session.notesOf(melody.source(), session.loopBeats());
+                int bars = (int) Math.ceil(session.bars());
+                int bar = melodyBar(beat);
+                screen.drawMelody(melody.name(), session.scale(), line, bar, bars,
+                        beat < 0 ? -1 : beat % session.loopBeats());
+                pads.show(Steps.melody(line, bar));
+                pads.light(Steps.sixteenth(beat));
+            }
+            case Part.Loop(int track) -> {
+                StudioTrack.Loop loop = loopAt(track);
+                StudioTrack.Slicing slicing = loop.slicing();
+                int page = loopPage(loop, beat);
+                int current = Steps.loopStep(beat, passBeats(loop), slicing.order().size());
+                float[] shownPeaks = peaks.computeIfAbsent(loop.audio(), audio -> Screen.peaks(audio, PEAK_BUCKETS));
+                screen.drawLoop(loop.name(), cutName(slicing.beats()), shownPeaks, loop.audio().frameCount(),
+                        slicing.starts(), slicing.order(), page, current, chosenSlice,
+                        beat < 0 ? -1 : beat % passBeats(loop) / passBeats(loop));
+                pads.show(Steps.loop(slicing.order(), page));
+                pads.light(current >= 0 && current / Steps.PADS == page ? current % Steps.PADS : -1);
+            }
+        }
+        var position = playback.live() == null ? null : playback.live().position();
+        status.setText(position == null ? "stopped" : String.format(Locale.ROOT, "bar %d of %d",
+                (int) (position.beat() / Session.BEATS_PER_BAR) + 1,
+                (int) Math.ceil(position.lengthBeats() / Session.BEATS_PER_BAR)));
+    }
+
+    /** Where the jam is, in beats from the top of its loop; -1 while it is stopped. */
+    private double beat() {
+        var live = playback.live();
+        var position = live == null ? null : live.position();
+        return position == null ? -1 : position.beat();
+    }
+
+    private void showTransport() {
+        boolean playing = playback.playing();
+        play.setGraphic(playing ? Glyph.stop(15, Color.WHITE) : Glyph.play(17, Color.WHITE));
+        play.setStyle("-fx-background-color: " + (playing ? "#a63d1d" : Look.PLAY)
+                + "; -fx-background-radius: 10; -fx-padding: 0; -fx-cursor: hand;");
+    }
+
+    private void showChips() {
+        chips.getChildren().clear();
+        for (int track = 0; track < session.tracks().size(); track++) {
+            String name = session.tracks().get(track).name().toLowerCase(Locale.ROOT);
+            switch (session.tracks().get(track)) {
+                case StudioTrack.Drums drums -> chips.getChildren().add(
+                        chip(name, new Part.DrumRow(drumRow), selected instanceof Part.DrumRow, track));
+                case StudioTrack.Melody melody -> {
+                    Part part = new Part.Melody(track);
+                    chips.getChildren().add(chip(name, part, part.equals(selected), track));
+                }
+                case StudioTrack.Loop loop -> {
+                    Part part = new Part.Loop(track);
+                    chips.getChildren().add(chip(name, part, part.equals(selected), track));
+                }
+            }
+        }
+        Button add = new Button("+ loop");
+        add.setFocusTraversable(false);
+        add.setStyle("-fx-background-color: transparent; -fx-border-color: " + Look.web(Look.BODY_EDGE)
+                + "; -fx-border-radius: 14; -fx-text-fill: " + Look.CHIP_OFF_TEXT + "; -fx-padding: 3 14 3 14;"
+                + " -fx-font-size: 13px; -fx-cursor: hand;");
+        add.setOnAction(event -> chooseLoop(add));
+        chips.getChildren().add(add);
+    }
+
+    private static String cutName(double beats) {
+        return CUTS.entrySet().stream().filter(cut -> cut.getValue() == beats).map(Map.Entry::getKey)
+                .findFirst().orElse("uncut");
+    }
+
+    /**
+     * A track's chip, with its mute and solo beside it as on the studio's list. A track that is
+     * not heard - muted, or left out by a solo elsewhere - shows it by its chip fading.
+     */
+    private Node chip(String name, Part part, boolean on, int track) {
+        Button chip = new Button(name);
+        chip.setFocusTraversable(false);
+        chip.setContextMenu(trackMenu(chip, track));
+        Tooltip.install(chip, new Tooltip("Right-click to change or remove"));
+        chip.setStyle("-fx-background-color: " + (on ? Look.CHIP_ON : Look.CHIP_OFF) + "; -fx-text-fill: "
+                + (on ? Look.CHIP_ON_TEXT : Look.CHIP_OFF_TEXT) + "; -fx-background-radius: 14;"
+                + " -fx-padding: 3 16 3 16; -fx-font-size: 13px; -fx-cursor: hand;");
+        chip.setOpacity(session.heard(track) ? 1.0 : 0.45);
+        chip.setOnAction(event -> select(part));
+        StudioTrack shown = session.tracks().get(track);
+        Button mute = toggle("M", shown.muted(), Look.PLAY, "Mute " + name, () -> {
+            session.setMuted(track, !session.tracks().get(track).muted());
+            showChips();
+        });
+        Button solo = toggle("S", shown.soloed(), Look.PAD_STRONG, "Solo " + name, () -> {
+            session.setSoloed(track, !session.tracks().get(track).soloed());
+            showChips();
+        });
+        HBox group = new HBox(4, chip, mute, solo);
+        group.setAlignment(Pos.CENTER_LEFT);
+        HBox.setMargin(group, new Insets(0, 10, 0, 0));
+        return group;
+    }
+
+    /**
+     * What a track's chip offers on its other button: the drums another pattern; a melody another
+     * sound, or to go; a loop another recording, or to go.
+     */
+    private ContextMenu trackMenu(Node chip, int track) {
+        ContextMenu menu = new ContextMenu();
+        switch (session.tracks().get(track)) {
+            case StudioTrack.Drums drums -> {
+                Menu patterns = new Menu("Pattern");
+                for (String name : Session.patternNames()) {
+                    MenuItem pattern = new MenuItem(name);
+                    pattern.setOnAction(event -> usePattern(name));
+                    patterns.getItems().add(pattern);
+                }
+                menu.getItems().add(patterns);
+            }
+            case StudioTrack.Melody melody -> {
+                Menu sounds = new Menu("Sound");
+                ToggleGroup chosen = new ToggleGroup();
+                for (String name : Sounds.synthNames()) {
+                    RadioMenuItem sound = new RadioMenuItem(name);
+                    sound.setToggleGroup(chosen);
+                    sound.setSelected(melody.instrument() != null && name.equals(melody.instrument().patch()));
+                    sound.setOnAction(event -> {
+                        if (melody.instrument() != null && melody.instrument().load(name)) {
+                            showKnobs();
+                        }
+                    });
+                    sounds.getItems().add(sound);
+                }
+                MenuItem remove = new MenuItem("Remove");
+                remove.setOnAction(event -> removeTrack(track));
+                menu.getItems().addAll(sounds, new SeparatorMenuItem(), remove);
+            }
+            case StudioTrack.Loop loop -> {
+                MenuItem change = new MenuItem("Another loop...");
+                change.setOnAction(event -> changeLoopFile(chip, track));
+                MenuItem remove = new MenuItem("Remove");
+                remove.setOnAction(event -> removeTrack(track));
+                menu.getItems().addAll(change, new SeparatorMenuItem(), remove);
+            }
+        }
+        return menu;
+    }
+
+    private static Button toggle(String letter, boolean on, String colour, String tip, Runnable onPress) {
+        Button toggle = new Button(letter);
+        toggle.setFocusTraversable(false);
+        toggle.setPrefSize(26, 26);
+        toggle.setMinSize(26, 26);
+        toggle.setStyle("-fx-background-color: " + (on ? colour : Look.CHIP_OFF) + "; -fx-text-fill: "
+                + (on ? "white" : Look.CHIP_OFF_TEXT) + "; -fx-background-radius: 13; -fx-padding: 0;"
+                + " -fx-font-size: 11px; -fx-font-weight: bold; -fx-cursor: hand;");
+        Tooltip.install(toggle, new Tooltip(tip));
+        toggle.setOnAction(event -> onPress.run());
+        return toggle;
+    }
+
+    /** One knob of a page: what it is called, and how it is made when it is shown. */
+    private record Slot(String name, Supplier<PanelKnob> knob) {
+    }
+
+    /**
+     * A part's two pages of knobs, eight to a page, null where a page has nothing. The sound page
+     * is laid out alike for every part - what makes the sound, the filter's cutoff, resonance and
+     * envelope, then drive, delay, reverb and crush - so a hand learns one box rather than three;
+     * the shape page is what is set once rather than played: the part's own four on top, the
+     * echo's time and feedback, the room's size and the duck under the kick below. A melody is
+     * the exception: its oscillators and envelope are played, so they take the first page's
+     * bottom row, and its drive and sends go up a row on the shape page.
+     */
+    private record Pages(List<Slot> sound, List<Slot> shape) {
+    }
+
+    /**
+     * The selected part's knobs: the sound page, or with shift lit the shape page. Under each knob
+     * is printed what it is on the other page, in orange where shift would make it so.
+     */
+    private void showKnobs() {
+        knobs.getChildren().clear();
+        Pages pages = switch (selected) {
+            case Part.DrumRow(int row) -> drumPages(row);
+            case Part.Loop(int track) -> loopPages(track);
+            case Part.Melody(int track) -> melodyPages(track);
+        };
+        if (pages == null) {
+            // a synth from outside the ported patches has no knobs to turn: it plays as it is
+            return;
+        }
+        for (int index = 0; index < 8; index++) {
+            Slot active = (shifted ? pages.shape() : pages.sound()).get(index);
+            Slot other = (shifted ? pages.sound() : pages.shape()).get(index);
+            Node dial;
+            if (active != null) {
+                dial = active.knob().get().node();
+            } else {
+                // a knob of the same size that is not there, so the grid keeps its places
+                dial = StudioPanels.boxKnob(" ", 0, 1, "", 0, 0).node();
+                dial.setVisible(false);
+            }
+            Label printed = new Label(other == null ? " " : other.name());
+            printed.setStyle("-fx-font-size: 11px; -fx-text-fill: "
+                    + (shifted ? Look.web(Look.QUIET_INK) : Look.PLAY) + ";");
+            VBox cell = new VBox(0, dial, printed);
+            cell.setAlignment(Pos.TOP_CENTER);
+            knobs.add(cell, index % 4, index / 4);
+        }
+    }
+
+    /** Shift lit or let go: the knobs' other page. */
+    private void toggleShift() {
+        shifted = !shifted;
+        showShift();
+        showKnobs();
+    }
+
+    private void showShift() {
+        shift.setStyle("-fx-background-color: " + (shifted ? Look.PLAY : Look.CHIP_OFF) + "; -fx-text-fill: "
+                + (shifted ? "white" : Look.CHIP_OFF_TEXT) + "; -fx-background-radius: 8; -fx-padding: 3 14 3 14;"
+                + " -fx-font-size: 12px; -fx-cursor: hand;");
+    }
+
+    private Pages drumPages(int row) {
+        GridRow shownRow = session.rows().get(row);
+        LiveEffects channel = shownRow.channel();
+        double decay = shownRow.envelope().decaySeconds();
+        List<Slot> sound = new ArrayList<>();
+        // the tuning is in the row's notes, so the drums are taken again for it to be heard now
+        sound.add(new Slot("tune", () -> knob(StudioPanels.boxBipolarKnob("Tune", -12, 12, "st", 1,
+                shownRow.envelope().semitones()), value -> playRow(row, r -> r.tunedTo(value)))));
+        sound.addAll(filter(channel));
+        sound.add(drive(channel));
+        sound.addAll(sends(channel::params, change -> effects(channel, change)));
+        List<Slot> shape = new ArrayList<>();
+        // the level is the row's track's gain, which the engine follows block by block
+        shape.add(new Slot("level", () -> knob(StudioPanels.boxKnob("Level", 0, 1, "", 2, shownRow.gain()),
+                value -> session.changeRow(row, r -> r.withGain((float) value)))));
+        shape.add(new Slot("accent", () -> knob(StudioPanels.boxKnob("Accent", 0, 1, "", 2,
+                shownRow.accentDepth()), value -> playRow(row, r -> r.withAccentDepth((float) value)))));
+        // turned all the way up it lets the drum ring as it was recorded, which is where it starts
+        shape.add(new Slot("decay", () -> knob(StudioPanels.boxExponentialKnob("Decay", 20, LONGEST_DECAY_MILLIS,
+                "ms", 0, decay > 0 ? decay * 1000 : LONGEST_DECAY_MILLIS), value -> playRow(row, r -> r.withDecay(
+                value >= LONGEST_DECAY_MILLIS - 0.5 ? 0 : value / 1000)))));
+        shape.add(new Slot("attack", () -> knob(StudioPanels.boxExponentialKnob("Attack", 1, 2000, "ms", 0,
+                channel.params().filterAttackSeconds() * 1000), value -> effects(channel, e -> e.sweeping(
+                e.filterEnvAmountHz(), (float) (value / 1000), e.filterDecaySeconds(), e.filterSustainLevel(),
+                e.filterReleaseSeconds())))));
+        shape.addAll(details(channel::params, change -> effects(channel, change)));
+        return new Pages(sound, shape);
+    }
+
+    private Pages loopPages(int track) {
+        StudioTrack.Loop loop = loopAt(track);
+        LiveEffects channel = loop.channel();
+        List<String> cuts = List.copyOf(CUTS.keySet());
+        int cut = Math.max(0, cuts.indexOf(cutName(loop.slicing().beats())));
+        List<Slot> sound = new ArrayList<>();
+        sound.add(new Slot("slice", () -> knob(StudioPanels.boxStepKnob("Slice", cuts, cut),
+                value -> recut(track, CUTS.get(cuts.get((int) Math.round(value)))))));
+        sound.addAll(filter(channel));
+        sound.add(drive(channel));
+        sound.addAll(sends(channel::params, change -> effects(channel, change)));
+        List<Slot> shape = new ArrayList<>();
+        shape.add(new Slot("level", () -> knob(StudioPanels.boxKnob("Level", 0, 1, "", 2, loop.gain()),
+                value -> session.setGain(track, (float) value))));
+        // how long the filter's sweep takes to fall back after each slice strikes it
+        shape.add(new Slot("f.decay", () -> knob(StudioPanels.boxExponentialKnob("F.decay", 10, 3000, "ms", 0,
+                channel.params().filterDecaySeconds() * 1000), value -> effects(channel, e -> e.sweeping(
+                e.filterEnvAmountHz(), e.filterAttackSeconds(), (float) (value / 1000), e.filterSustainLevel(),
+                e.filterReleaseSeconds())))));
+        shape.add(null);
+        shape.add(null);
+        shape.addAll(details(channel::params, change -> effects(channel, change)));
+        return new Pages(sound, shape);
+    }
+
+    private Pages melodyPages(int track) {
+        StudioTrack.Melody melody = (StudioTrack.Melody) session.tracks().get(track);
+        Instrument instrument = melody.instrument();
+        if (instrument == null || instrument.setting() == null) {
+            return null;
+        }
+        SynthParams params = instrument.setting().params();
+        Supplier<EffectParams> effects = () -> instrument.setting().effects();
+        Consumer<UnaryOperator<EffectParams>> change = turned -> sends(instrument, turned);
+        List<String> waves = Arrays.stream(Waveform.values()).map(Waveform::toString).toList();
+        List<Slot> sound = new ArrayList<>();
+        sound.add(new Slot("wave", () -> knob(StudioPanels.boxStepKnob("Wave", waves, params.waveform().ordinal()),
+                value -> synth(instrument, p -> p.withWaveform(Waveform.values()[(int) Math.round(value)])))));
+        sound.add(new Slot("cutoff", () -> knob(StudioPanels.boxExponentialKnob("Cutoff", 40, 12000, "Hz", 0,
+                params.cutoffHz()), value -> synth(instrument, p -> p.withCutoff((float) value)))));
+        sound.add(new Slot("res", () -> knob(StudioPanels.boxKnob("Res", 0, 0.95, "", 2, params.resonance()),
+                value -> synth(instrument, p -> p.withResonance((float) value)))));
+        sound.add(new Slot("env", () -> knob(StudioPanels.boxBipolarKnob("Env", -4000, 8000, "Hz", 0,
+                params.filterEnvAmountHz()), value -> synth(instrument, p -> p.withFilterEnvAmount((float) value)))));
+        // a synth is played by its oscillators and its level's envelope as much as by its filter,
+        // so all of them are on the first page and its effects go under shift
+        sound.add(new Slot("voices", () -> knob(StudioPanels.boxKnob("Voices", 1, 7, "", 0, params.unisonVoices()),
+                value -> synth(instrument, p -> p.withVoices((int) Math.round(value))))));
+        sound.add(new Slot("detune", () -> knob(StudioPanels.boxKnob("Detune", 0, 60, "ct", 1, params.detuneCents()),
+                value -> synth(instrument, p -> p.withDetune((float) value)))));
+        sound.add(new Slot("sustain", () -> knob(StudioPanels.boxKnob("Sustain", 0, 1, "", 2, params.sustainLevel()),
+                value -> synth(instrument, p -> p.withSustain((float) value)))));
+        sound.add(new Slot("release", () -> knob(StudioPanels.boxExponentialKnob("Release", 1, 4000, "ms", 0,
+                params.releaseSeconds() * 1000),
+                value -> synth(instrument, p -> p.withRelease((float) (value / 1000))))));
+        List<Slot> shape = new ArrayList<>();
+        shape.add(new Slot("drive", () -> knob(StudioPanels.boxKnob("Drive", 0, 2, "", 2, params.drive()),
+                value -> synth(instrument, p -> p.withDrive((float) value)))));
+        shape.addAll(sends(effects, change));
+        shape.addAll(details(effects, change));
+        return new Pages(sound, shape);
+    }
+
+    /** A channel's filter, as a drum row and a loop share it: all the way open is no filter at all. */
+    private static List<Slot> filter(LiveEffects channel) {
+        EffectParams now = channel.params();
+        return List.of(
+                new Slot("cutoff", () -> knob(StudioPanels.boxExponentialKnob("Cutoff", 40, OPEN_CUTOFF, "Hz", 0,
+                        now.filter() == ChannelFilter.OFF ? OPEN_CUTOFF : now.filterCutoffHz()),
+                        value -> effects(channel, e -> e.filtered(
+                                value >= OPEN_CUTOFF - 1 ? ChannelFilter.OFF : ChannelFilter.LADDER,
+                                (float) value, e.filterResonance())))),
+                new Slot("res", () -> knob(StudioPanels.boxKnob("Res", 0, 0.95, "", 2, now.filterResonance()),
+                        value -> effects(channel, e -> e.filtered(e.filter(), e.filterCutoffHz(), (float) value)))),
+                // the filter swept by an envelope struck at every hit or slice
+                new Slot("env", () -> knob(StudioPanels.boxBipolarKnob("Env", -8000, 8000, "Hz", 0,
+                        now.filterEnvAmountHz()), value -> effects(channel, e -> e.sweeping((float) value,
+                        e.filterAttackSeconds(), e.filterDecaySeconds(), e.filterSustainLevel(),
+                        e.filterReleaseSeconds())))));
+    }
+
+    private static Slot drive(LiveEffects channel) {
+        return new Slot("drive", () -> knob(StudioPanels.boxKnob("Drive", 0, 2, "", 2, channel.params().drive()),
+                value -> effects(channel, e -> e.driven(e.shape(), (float) value, e.outputTrim()))));
+    }
+
+    /** Delay, reverb and crush, wherever the effects live: a channel's own, or a synth's. */
+    private static List<Slot> sends(Supplier<EffectParams> now, Consumer<UnaryOperator<EffectParams>> change) {
+        return List.of(
+                new Slot("delay", () -> knob(StudioPanels.boxKnob("Delay", 0, 1, "", 2, now.get().delayMix()),
+                        value -> change.accept(e -> e.withDelayMix((float) value)))),
+                new Slot("verb", () -> knob(StudioPanels.boxKnob("Verb", 0, 1, "", 2, now.get().reverbMix()),
+                        value -> change.accept(e -> e.withReverbMix((float) value)))),
+                new Slot("crush", () -> knob(StudioPanels.boxKnob("Crush", 0, 1, "", 2, now.get().crush()),
+                        value -> change.accept(e -> e.withCrush((float) value)))));
+    }
+
+    /** The shape page's bottom row, the same for every part: the echo's time and feedback, the room, the duck. */
+    private static List<Slot> details(Supplier<EffectParams> now, Consumer<UnaryOperator<EffectParams>> change) {
+        return List.of(
+                new Slot("time", () -> knob(StudioPanels.boxExponentialKnob("Time", 20, 2000, "ms", 0,
+                        now.get().delayMillis()), value -> change.accept(e -> e.withDelayMillis((float) value)))),
+                new Slot("feedback", () -> knob(StudioPanels.boxKnob("Feedback", 0, 0.95, "", 2,
+                        now.get().delayFeedback()), value -> change.accept(e -> e.withDelayFeedback((float) value)))),
+                new Slot("size", () -> knob(StudioPanels.boxKnob("Size", 0, 1, "", 2, now.get().reverbSize()),
+                        value -> change.accept(e -> e.withReverbSize((float) value)))),
+                // ducked under the kick, as the studio's sidechain does
+                new Slot("duck", () -> knob(StudioPanels.boxKnob("Duck", 0, 1, "", 2, now.get().duckDepth()),
+                        value -> change.accept(e -> e.withDuck((float) value, e.duckMillis())))));
+    }
+
+    private static PanelKnob knob(PanelKnob knob, DoubleConsumer onTurn) {
+        knob.setOnChange(onTurn);
+        return knob;
+    }
+
+    /** A knob of the selected melody's synth, heard in the notes already sounding. */
+    private static void synth(Instrument instrument, UnaryOperator<SynthParams> change) {
+        SynthSetting now = instrument.setting();
+        if (now != null) {
+            instrument.set(new SynthSetting(now.preset(), change.apply(now.params()), now.effects(), now.delaySync()));
+        }
+    }
+
+    /** A drum row changed by a knob, and heard at once rather than from the next loop. */
+    private void playRow(int row, UnaryOperator<GridRow> change) {
+        session.changeRow(row, change);
+        playback.takeNow();
+    }
+
+    /**
+     * A knob of a drum row's or a loop's channel: set on the channel the engine is already
+     * reading, so it is heard in the hits under way, with nothing to hand over.
+     */
+    private static void effects(LiveEffects channel, UnaryOperator<EffectParams> change) {
+        channel.setParams(change.apply(channel.params()));
+    }
+
+    /** A knob of a melody's synth effects. */
+    private static void sends(Instrument instrument, UnaryOperator<EffectParams> change) {
+        SynthSetting now = instrument.setting();
+        if (now != null) {
+            instrument.set(new SynthSetting(now.preset(), now.params(), change.apply(now.effects()), now.delaySync()));
+        }
+    }
+
+    // ---- the box
+
+    /**
+     * The box as its sketch has it, top to bottom: the screen with the knobs beside it, play and
+     * the tempo with the performance strips, the pads, the tracks, and a line saying what it runs
+     * on.
+     */
+    private StackPane layout() {
+        Label name = new Label("groovebox");
+        name.setStyle("-fx-font-size: 17px; -fx-font-weight: bold; -fx-text-fill: " + Look.web(Look.INK) + ";");
+        Label kind = new Label("groovebox · pure java");
+        kind.setStyle("-fx-font-size: 13px; -fx-text-fill: " + Look.web(Look.QUIET_INK) + ";");
+        shift.setFocusTraversable(false);
+        shift.setOnAction(event -> toggleShift());
+        Tooltip.install(shift, new Tooltip("The knobs' other page, printed in orange under them (Tab)"));
+        showShift();
+        Region beforeShift = new Region();
+        HBox.setHgrow(beforeShift, Priority.ALWAYS);
+        HBox title = new HBox(12, name, kind, beforeShift, shift);
+        title.setAlignment(Pos.CENTER_LEFT);
+
+        knobs.setHgap(8);
+        knobs.setVgap(10);
+        knobs.setPrefWidth(KNOBS_WIDTH);
+        knobs.setMinHeight(Screen.HEIGHT);
+        knobs.setAlignment(Pos.TOP_CENTER);
+        Node display = screen.node();
+        display.setOnMouseMoved(event -> display.setCursor(selected instanceof Part.Loop
+                || selected instanceof Part.DrumRow && Screen.drumRowAt(event.getY(), session.rows().size()) >= 0
+                ? Cursor.HAND : Cursor.DEFAULT));
+        display.setOnDragDetected(event -> {
+            int slice = sliceOnScreen(event.getX());
+            if (slice >= 0) {
+                // carried to a pad, which plays it from then on
+                Pads.startDrag(display, slice);
+            }
+            event.consume();
+        });
+        display.setOnMouseClicked(event -> {
+            int slice = event.isStillSincePress() ? sliceOnScreen(event.getX()) : -1;
+            if (slice >= 0) {
+                // picked for the pads to play when pressed, until it is clicked again
+                chosenSlice = chosenSlice == slice ? -1 : slice;
+                shown = "";
+            }
+        });
+        display.setOnMousePressed(event -> {
+            if (selected instanceof Part.Loop(int track)) {
+                // heard as soon as it is touched, whether it is then picked or carried
+                int slice = sliceOnScreen(event.getX());
+                if (slice >= 0) {
+                    trySlice(loopAt(track), slice);
+                }
+                return;
+            }
+            int row = selected instanceof Part.DrumRow ? Screen.drumRowAt(event.getY(), session.rows().size()) : -1;
+            if (row >= 0) {
+                select(new Part.DrumRow(row));
+            }
+        });
+        HBox top = new HBox(GAP, display, knobs);
+
+        play.setPrefSize(PLAY_WIDTH, Strip.HEIGHT);
+        play.setMinSize(PLAY_WIDTH, Strip.HEIGHT);
+        play.setFocusTraversable(false);
+        Tooltip.install(play, new Tooltip("Play and stop (Space)"));
+        play.setOnAction(event -> togglePlayback());
+        showTransport();
+        tempo.show(session.bpm());
+        HBox transport = new HBox(STRIP_GAP + 6, play, tempo.node(), performance());
+        transport.setAlignment(Pos.CENTER_LEFT);
+
+        status.setStyle("-fx-font-family: 'Consolas', monospace; -fx-font-size: 12px; -fx-text-fill: "
+                + Look.web(Look.QUIET_INK) + ";");
+        Label made = new Label("jdk " + Runtime.version().feature() + " · javafx · java sound");
+        made.setStyle(status.getStyle());
+        Region gap = new Region();
+        HBox.setHgrow(gap, Priority.ALWAYS);
+        HBox footer = new HBox(made, gap, status);
+
+        VBox body = new VBox(16, title, top, transport, pads.node(), chips, footer);
+        VBox.setMargin(footer, new Insets(2, 0, 0, 0));
+        body.setPadding(new Insets(20, 24, 16, 24));
+        body.setPrefWidth(INSIDE + 48);
+        body.setMaxWidth(INSIDE + 48);
+        body.setStyle("-fx-background-color: " + Look.web(Look.BODY_EDGE) + ", " + Look.web(Look.BODY)
+                + "; -fx-background-insets: 0, 1; -fx-background-radius: 22, 21;");
+        StackPane room = new StackPane(body);
+        room.setPadding(new Insets(20));
+        room.setStyle("-fx-background-color: " + Look.web(Look.ROOM) + ";");
+        return room;
+    }
+
+    /** The effects played over the whole mix: a strip each, held to play, right-clicked to lock. */
+    private Node performance() {
+        double width = Math.floor((INSIDE - PLAY_WIDTH - Tempo.WIDTH - 2 * (STRIP_GAP + 6) - 3 * STRIP_GAP) / 4);
+        double[] slices = {0.125, 0.25, 0.5, 1.0};
+        strips.add(Strip.zones("Stutter", List.of("1/32", "1/16", "1/8", "1/4"), width, zone -> {
+            var live = playback.live();
+            if (live != null) {
+                live.stutter(zone < 0 ? 0 : slices[(int) zone]);
+            }
+        }));
+        // low-pass to the left, high-pass to the right, nothing done at the middle
+        strips.add(Strip.continuous("Filter", width, value -> {
+            var live = playback.live();
+            if (live != null) {
+                live.performance().filter(value);
+            }
+        }));
+        strips.add(Strip.continuous("Dub", width, value -> {
+            var live = playback.live();
+            if (live != null) {
+                live.performance().dub(value);
+            }
+        }));
+        strips.add(Strip.continuous("Talkbox", width, value -> {
+            var live = playback.live();
+            if (live != null) {
+                live.performance().talkbox(value);
+            }
+        }));
+        HBox row = new HBox(STRIP_GAP);
+        strips.forEach(strip -> row.getChildren().add(strip.node()));
+        return row;
+    }
+
+    private static void showError(Throwable failure) {
+        Alert alert = new Alert(Alert.AlertType.ERROR, String.valueOf(failure.getMessage()));
+        alert.setHeaderText(failure.getClass().getSimpleName());
+        alert.show();
+    }
+}

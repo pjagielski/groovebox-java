@@ -1,0 +1,8 @@
+# LF in the repository and in every checkout, whatever the system: gradlew has to run on macOS
+# and Linux, and editors on Windows read LF without trouble. Only the Windows batch file wants CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+
+*.jar binary
+*.mid binary
+*.wav binary
