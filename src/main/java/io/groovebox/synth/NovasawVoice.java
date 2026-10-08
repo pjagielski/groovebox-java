@@ -100,7 +100,7 @@ public final class NovasawVoice implements VoiceSource {
         resonance = new Ramp(initial.resonance(), longRamp);
         drive = new Ramp(initial.drive(), shortRamp);
         outputTrim = new Ramp(initial.outputTrim(), shortRamp);
-        unisonGain = new Ramp(initial.unisonGain(), longRamp);
+        unisonGain = new Ramp(initial.oscillatorGain(), longRamp);
         cutoff = new LogRamp(initial.cutoffHz(), longRamp);
         targetFilter = initial.filter();
         filterMix = targetFilter == FilterKind.LADDER ? 1.0f : 0.0f;
@@ -108,7 +108,7 @@ public final class NovasawVoice implements VoiceSource {
         // spread across the cycle by however many are going to be used, not by however many there
         // could be: at three saws, dividing by seven left all three inside the first third of it,
         // so their steps nearly coincided and what should be a chorus came out as one hard edge
-        int spread = Math.max(1, Math.min(UNISON_VOICES, params.get().unisonVoices()));
+        int spread = Math.max(1, Math.min(UNISON_VOICES, params.get().oscillators()));
         for (int unison = 0; unison < UNISON_VOICES; unison++) {
             double evenPhase = (double) (unison % spread) / spread;
             phase[unison] = wrapUnitPhase(evenPhase + deterministicPhaseJitter(midiNote, unison, heldFrames) * 0.19);
@@ -125,12 +125,12 @@ public final class NovasawVoice implements VoiceSource {
         float resonanceValue = resonance.next(current.resonance());
         float driveValue = drive.next(current.drive());
         float trimValue = outputTrim.next(current.outputTrim());
-        float gainValue = unisonGain.next(current.unisonGain());
+        float gainValue = unisonGain.next(current.oscillatorGain());
         float cutoffValue = cutoff.next(current.cutoffHz());
-        if (Float.compare(lastDetune, detuneCents) != 0 || lastVoices != current.unisonVoices()) {
+        if (Float.compare(lastDetune, detuneCents) != 0 || lastVoices != current.oscillators()) {
             lastDetune = detuneCents;
-            lastVoices = current.unisonVoices();
-            double[] offsets = UNISON_OFFSETS[current.unisonVoices()];
+            lastVoices = current.oscillators();
+            double[] offsets = UNISON_OFFSETS[current.oscillators()];
             for (int i = 0; i < offsets.length; i++) {
                 detuneRatios[i] = Math.pow(2.0, offsets[i] * detuneCents / 1200.0);
             }
@@ -148,7 +148,7 @@ public final class NovasawVoice implements VoiceSource {
         motionPhase = wrapTwoPi(motionPhase + 2.0 * Math.PI * current.motionRateHz() / sampleRate);
 
         float mono = 0.0f;
-        int voices = current.unisonVoices();
+        int voices = current.oscillators();
         for (int unison = 0; unison < voices; unison++) {
             double driftCents = current.motion() == 0.0f ? 0.0
                     : Math.sin(driftPhase[unison]) * current.motion() * 0.55;

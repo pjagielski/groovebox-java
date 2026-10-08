@@ -20,13 +20,18 @@ public record SynthParams(
         float drive, float outputTrim, float unisonGain, float resonanceCompensation,
         Saturation shape, FilterKind filter, int unisonVoices, Waveform waveform) {
 
-    public SynthParams {
-        // Evenly spread unison phases nearly cancel a sine's only harmonic. A bass sine needs
-        // one stable oscillator; keep the count and gain in agreement for every construction path.
-        if (waveform == Waveform.SINE) {
-            unisonVoices = 1;
-            unisonGain = unisonGainFor(detuneCents, 1);
-        }
+    /**
+     * How many oscillators sound: as many as the unison asks for, but one for a sine, whose only
+     * harmonic evenly spread phases would nearly cancel. The unison itself is left as it was set,
+     * so a waveform turned past the sine and on comes back with all its voices.
+     */
+    public int oscillators() {
+        return waveform == Waveform.SINE ? 1 : unisonVoices;
+    }
+
+    /** What each of the {@link #oscillators()} is multiplied by, for there being that many. */
+    public float oscillatorGain() {
+        return waveform == Waveform.SINE ? unisonGainFor(detuneCents, 1) : unisonGain;
     }
 
     /**

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -131,11 +132,23 @@ class WaveformTest {
         SynthParams bass = new SubBassSynth().params().withSub(0);
         SynthParams sine = bass.withWaveform(Waveform.SINE);
 
-        assertEquals(1, sine.unisonVoices(), "an 808-style sine needs a stable fundamental");
-        assertEquals(1, sine.withVoices(7).unisonVoices(),
+        assertEquals(1, sine.oscillators(), "an 808-style sine needs a stable fundamental");
+        assertEquals(1, sine.withVoices(7).oscillators(),
                 "raising the unison knob must not bring phase cancellation back");
         assertEquals(voiceLevel(sine.withVoices(1)), voiceLevel(sine), 1e-6,
                 "the default sine should be as full as its single-oscillator version");
+    }
+
+    @Test
+    void aWaveformTurnedPastTheSineComesBackWithItsUnison() {
+        SynthParams seven = new AnthemLeadSynth().params().withVoices(7);
+
+        // the wave knob turned from saw to sine and back to square, the voices knob left at seven
+        SynthParams back = seven.withWaveform(Waveform.SINE).withWaveform(Waveform.SQUARE);
+
+        assertEquals(7, back.unisonVoices(), "the voices knob still says seven");
+        assertArrayEquals(heldVoice(seven.withWaveform(Waveform.SQUARE), 60), heldVoice(back, 60),
+                "and seven are heard, as if the sine had never been on the way");
     }
 
     @Test
