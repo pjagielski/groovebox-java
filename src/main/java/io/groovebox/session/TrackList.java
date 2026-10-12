@@ -28,10 +28,16 @@ public final class TrackList {
     private TrackList() {
     }
 
-    /** What a jam config makes: the grid, then the one melody it names — with the grid selected. */
-    public static TrackList startingWith(String melodyName, MelodySource melody, Instrument instrument) {
+    /** The permanent drum track, selected, with no melodies or audio loops yet. */
+    public static TrackList drumsOnly() {
         TrackList list = new TrackList();
         list.tracks.add(new StudioTrack.Drums("Drums", 1.0f, false));
+        return list;
+    }
+
+    /** What a jam config makes: the grid, then the one melody it names — with the grid selected. */
+    public static TrackList startingWith(String melodyName, MelodySource melody, Instrument instrument) {
+        TrackList list = drumsOnly();
         list.tracks.add(new StudioTrack.Melody(melodyName, 1.0f, false, melody, instrument));
         return list;
     }

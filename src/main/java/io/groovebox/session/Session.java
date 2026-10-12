@@ -7,6 +7,7 @@ import io.groovebox.livecode.LiveCode;
 import io.groovebox.livecode.LiveCodeException;
 import io.groovebox.midi.MidiFileReader;
 import io.groovebox.model.DrumTrack;
+import io.groovebox.model.Drum;
 import io.groovebox.model.LoopTrack;
 import io.groovebox.model.MelodyTrack;
 import io.groovebox.model.Note;
@@ -112,6 +113,25 @@ public final class Session {
             setBpm(MidiFileReader.readTempo(nextSequence));
             bars = next.bars();
             guessScale();
+        });
+    }
+
+    /** A fresh workspace with an editable drum kit, no hits or melodies, and nothing to undo. */
+    public void startEmpty() {
+        changing(() -> {
+            history.forget();
+            jamConfig = null;
+            tracks = TrackList.drumsOnly();
+            fallbackSynth = Sounds.resolveSynth(DemoJam.LEAD_SYNTH);
+            rows.clear();
+            for (Drum drum : List.of(Drum.KICK, Drum.SNARE, Drum.CLOSED_HAT, Drum.OPEN_HAT)) {
+                rows.add(GridRow.fromTrack(new DrumTrack(drum, "................", 1.0f)));
+            }
+            code = "";
+            chords = "";
+            scale = new Scale(0, Scale.Mode.ANY);
+            setBpm(120);
+            bars = 8;
         });
     }
 
@@ -332,6 +352,29 @@ public final class Session {
         }
     }
 
+    /** A MIDI track's source and range changed together, keeping its instrument, mix and identity. */
+    public void changeMidiWindow(int track, MidiWindow next) throws Exception {
+        if (!(tracks.get(track) instanceof StudioTrack.Melody melody)) {
+            throw new IllegalArgumentException("Choose a melody track");
+        }
+        MidiWindow window = next.withFile(next.file().toAbsolutePath().normalize());
+        Sequence sequence = sequenceOf(window.file());
+        List<Note> notes = MidiFileReader.readTrack(sequence, window.trackIndex());
+        if (notes.isEmpty()) {
+            throw new IllegalArgumentException("The selected MIDI track has no notes");
+        }
+        int fileBars = (int) Math.ceil(sequence.getTickLength() / (double) sequence.getResolution() / BEATS_PER_BAR);
+        if (window.startBeat() >= fileBars * (double) BEATS_PER_BAR || window.endBeat() > fileBars * (double) BEATS_PER_BAR) {
+            throw new IllegalArgumentException("The range must fit within the MIDI file's " + fileBars + " bars");
+        }
+        if (window.equals(melody.source())) {
+            return;
+        }
+        remember();
+        tracks.replace(track, melody.withSource(window));
+        publish();
+    }
+
     /** The selected loop's file, bars or slices changed: the same track, playing something else. */
     public void changeLoop(StudioTrack.Loop next) {
         changeLoop(tracks.selectedIndex(), next);
@@ -397,6 +440,48 @@ public final class Session {
         remember();
         tracks.add(track);
         publish();
+    }
+
+    /** Adds only the selected file parts and ranges as one edit, after validating every selection. */
+    public int addMidiWindows(List<MidiWindow> selected) throws Exception {
+        List<MidiWindow> imported = new ArrayList<>();
+        for (MidiWindow chosen : selected) {
+            MidiWindow window = chosen.withFile(chosen.file().toAbsolutePath().normalize());
+            Sequence sequence = sequenceOf(window.file());
+            if (MidiFileReader.readTrack(sequence, window.trackIndex()).isEmpty()) {
+                throw new IllegalArgumentException("The selected MIDI track has no notes");
+            }
+            imported.add(window);
+        }
+        if (imported.isEmpty()) return 0;
+        changing(() -> {
+            remember();
+            for (MidiWindow window : imported) {
+                String name = unusedName(trackName(sequences.get(window.file()), window.trackIndex()));
+                tracks.add(newMelody().named(name).withSource(window));
+            }
+        });
+        return imported.size();
+    }
+
+    /** Adds the note tracks of the chosen MIDI files as one edit, leaving the jam's tempo and loop in place. */
+    public int addMidiFiles(List<Path> files) throws Exception {
+        List<MidiWindow> imported = new ArrayList<>();
+        // Read every file before touching the tracks, so a bad file cannot leave half an import.
+        for (Path chosen : files) {
+            Path file = chosen.toAbsolutePath().normalize();
+            Sequence sequence = sequenceOf(file);
+            int before = imported.size();
+            for (int index = 0; index < sequence.getTracks().length; index++) {
+                if (!MidiFileReader.readTrack(sequence, index).isEmpty()) {
+                    imported.add(new MidiWindow(file, index, 0));
+                }
+            }
+            if (imported.size() == before) {
+                throw new IllegalArgumentException("No tracks with notes in " + file.getFileName());
+            }
+        }
+        return addMidiWindows(imported);
     }
 
     /**
@@ -474,6 +559,22 @@ public final class Session {
         return known;
     }
 
+    /** The parts with notes in a file, with their names and occupied bars for a source chooser. */
+    public List<MidiPart> midiParts(Path file) throws Exception {
+        Sequence sequence = sequenceOf(file.toAbsolutePath().normalize());
+        List<MidiPart> parts = new ArrayList<>();
+        for (int index = 0; index < sequence.getTracks().length; index++) {
+            List<Note> notes = MidiFileReader.readTrack(sequence, index);
+            if (!notes.isEmpty()) {
+                int first = (int) (notes.getFirst().beat() / BEATS_PER_BAR);
+                int end = (int) Math.ceil(notes.stream().mapToDouble(note -> note.beat() + note.durationBeats())
+                        .max().orElseThrow() / BEATS_PER_BAR);
+                parts.add(new MidiPart(index, trackName(sequence, index), notes.size(), first, end));
+            }
+        }
+        return List.copyOf(parts);
+    }
+
     public Sample loopOf(Path file) throws Exception {
         Sample known = loopAudio.get(file);
         if (known == null) {
@@ -495,8 +596,7 @@ public final class Session {
             windows.clear();
             windowsLengthBeats = lengthBeats;
         }
-        return windows.computeIfAbsent((MidiWindow) source, key -> Sounds.loadMelodyTrack(
-                sequences.get(key.file()), key.trackIndex(), key.startBar(), lengthBeats / BEATS_PER_BAR).notes());
+        return windows.computeIfAbsent((MidiWindow) source, key -> key.notes(sequences.get(key.file()), lengthBeats));
     }
 
     // ---- undo
@@ -655,7 +755,7 @@ public final class Session {
     /** A MIDI track by the name its file gives it, or by its number when the file gives none. */
     private static String trackName(Sequence sequence, int trackIndex) {
         String name = trackIndex < sequence.getTracks().length
-                ? MidiFileReader.trackName(sequence, trackIndex).trim() : "";
+                ? MidiFileReader.trackName(sequence, trackIndex).replace("\0", "").trim() : "";
         return name.isEmpty() ? "Track " + trackIndex : name;
     }
 
