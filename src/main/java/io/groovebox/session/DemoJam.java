@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.function.UnaryOperator;
 
 /**
- * The jam the box starts with when no config names another: Am9 Fmaj9 Dm9 E7♭9, a bar each and
+ * The optional demo loaded from the box's title bar: Am9 Fmaj9 Dm9 E7♭9, a bar each and
  * twice round, under a plucked lead echoing on the dotted eighth, a pad holding the chords and
  * pumping under the kick, a sub bass on the off-beats, and the disco pattern. Written here as
  * notes, so the box sounds at once without a file of any kind - and played rather than typed: the

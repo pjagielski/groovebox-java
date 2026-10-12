@@ -2,6 +2,7 @@ package io.groovebox.app;
 
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Cursor;
@@ -12,13 +13,16 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
+import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.RadioMenuItem;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
+import javafx.scene.input.KeyCombination;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -27,6 +31,8 @@ import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.stage.FileChooser;
+import javafx.stage.DirectoryChooser;
+import io.groovebox.model.Drum;
 import javafx.stage.Stage;
 import io.groovebox.session.Sounds;
 import io.groovebox.audio.AudioEngine;
@@ -38,6 +44,8 @@ import io.groovebox.session.Instrument;
 import io.groovebox.session.DemoJam;
 import io.groovebox.session.Playback;
 import io.groovebox.session.Session;
+import io.groovebox.session.MidiWindow;
+import io.groovebox.session.MidiPart;
 import io.groovebox.session.StudioTrack;
 import io.groovebox.controls.Glyph;
 import io.groovebox.controls.PanelKnob;
@@ -74,11 +82,11 @@ import java.util.function.UnaryOperator;
  * selected row's steps the pads are and a press on one cycles, or a melody, whose bar the pads
  * show note by note and a press on one sounds. Which drum row is a matter for the screen, where
  * the whole kit is: a click on a row picks it, and so do the up and down arrows. The knobs
- * are the chip's: a drum row's level, a melody's synth. The tempo sits between play and the
- * effects, where a hand reaches for all three. Space plays and stops.
+ * are the chip's: a drum row's level, a melody's synth. Play and tempo sit below the screen.
+ * Space plays and stops.
  *
  * <p>Starts from {@code --config <file>} when given one - its melody, its tempo and its drums -
- * and otherwise from {@link DemoJam}, made in code.
+ * and otherwise with an empty workspace. {@link DemoJam} can be loaded from the title bar.
  */
 public final class Groovebox extends Application {
     // how long a melody pad sounds its note: a voice is made with its length, not let go of
@@ -115,12 +123,18 @@ public final class Groovebox extends Application {
     private int chosenSlice = -1;
     // where the last loop came from, which is where the next chooser opens
     private Path loopFolder;
+    // the next MIDI chooser opens where the last import came from
+    private Path midiFolder;
+    private Path drumFolder;
+    private Path projectFile;
+    private SampleBank defaultDrumKit;
     // each loop's waveform as the screen draws it, worked out once per recording
     private final Map<Sample, float[]> peaks = new IdentityHashMap<>();
 
     private final Screen screen = new Screen();
     private final Pads pads = new Pads(INSIDE, this::pressed, this::otherPressed);
     private final HBox chips = new HBox(8);
+    private final ScrollPane trackScroll = new ScrollPane(chips);
     private final GridPane knobs = new GridPane();
     private final Button play = new Button();
     private final Label status = new Label("stopped");
@@ -138,13 +152,17 @@ public final class Groovebox extends Application {
 
     @Override
     public void start(Stage stage) throws Exception {
+        defaultDrumKit = SampleBank.load(Path.of("samples"), AudioEngine.DEFAULT_SAMPLE_RATE);
         playback = new Playback(
-                new AudioEngine(SampleBank.load(Path.of("samples"), AudioEngine.DEFAULT_SAMPLE_RATE)), session::jam);
+                new AudioEngine(defaultDrumKit), session::jam);
         Path config = configPath();
         if (config != null) {
-            session.load(config);
+            SampleBank kit = session.open(config);
+            projectFile = config.toAbsolutePath().normalize();
+            drumFolder = session.drumSamplesFolder();
+            if (kit != null) playback.useDrumKit(kit);
         } else {
-            DemoJam.startIn(session);
+            session.startEmpty();
         }
 
         Scene scene = new Scene(layout());
@@ -178,10 +196,10 @@ public final class Groovebox extends Application {
         });
         pads.setDragging(this::dragged, this::dropped);
         stage.setScene(scene);
-        stage.setTitle("Groovebox");
+        stage.setTitle(projectFile == null ? "Groovebox" : "Groovebox · " + projectFile.getFileName());
         stage.getIcons().setAll(StudioIcon.sizes());
         stage.setResizable(false);
-        select(selected);
+        refreshJamView();
         stage.show();
         frames().start();
     }
@@ -353,6 +371,67 @@ public final class Groovebox extends Application {
         }
     }
 
+    /** One chosen part per file, previewed and auditioned before any tracks are added. */
+    private void chooseMidi(Node owner) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Add tracks from MIDI files");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("MIDI files", "*.mid", "*.midi"));
+        if (midiFolder != null && Files.isDirectory(midiFolder)) {
+            chooser.setInitialDirectory(midiFolder.toFile());
+        }
+        List<File> chosen = chooser.showOpenMultipleDialog(owner.getScene().getWindow());
+        if (chosen == null || chosen.isEmpty()) {
+            return;
+        }
+        boolean[] paused = {false};
+        try {
+            List<Path> files = chosen.stream().map(file -> file.toPath().toAbsolutePath().normalize()).toList();
+            List<MidiWindow> selections = new ArrayList<>();
+            double jamBars = session.bars();
+            for (Path file : files) {
+                List<MidiPart> parts = session.midiParts(file);
+                if (parts.isEmpty()) throw new IllegalArgumentException("No tracks with notes in " + file.getFileName());
+                var edit = MidiLoopDialog.createImport(owner.getScene().getWindow(),
+                        new MidiWindow(file, parts.getFirst().trackIndex(), 0), parts, jamBars,
+                        session.sequenceOf(file), session.bpm(), session.newMelody().instrument().synth(),
+                        () -> {
+                            if (playback.playing()) {
+                                playback.stop();
+                                paused[0] = true;
+                                showTransport();
+                            }
+                        }).showAndWait();
+                if (edit.isEmpty()) return;
+                selections.add(edit.get().window());
+                jamBars = edit.get().jamBars();
+            }
+            double nextBars = jamBars;
+            session.changing(() -> {
+                try {
+                    session.addMidiWindows(selections);
+                    session.setBars(nextBars);
+                } catch (Exception failure) {
+                    throw new IllegalArgumentException(failure.getMessage(), failure);
+                }
+            });
+            midiFolder = files.getFirst().getParent();
+            playback.takeNow();
+            select(new Part.Melody(session.tracks().selectedIndex()));
+            Platform.runLater(() -> trackScroll.setHvalue(1));
+        } catch (Exception failure) {
+            showError(failure);
+        } finally {
+            if (paused[0]) {
+                try {
+                    playback.play();
+                    showTransport();
+                } catch (Exception failure) {
+                    showError(failure);
+                }
+            }
+        }
+    }
+
     /** A loop's other recording: the same track, its channel and its cut, playing something else. */
     private void changeLoopFile(Node owner, int track) {
         Path file = pickLoop(owner);
@@ -368,6 +447,50 @@ public final class Groovebox extends Application {
             select(new Part.Loop(track));
         } catch (Exception failure) {
             showError(failure);
+        }
+    }
+
+    /** A MIDI part's source and bars chosen together, heard in the pass already under way. */
+    private void chooseMidiWindow(Node owner, int track) {
+        if (!(session.tracks().get(track) instanceof StudioTrack.Melody melody) || melody.window() == null) {
+            return;
+        }
+        boolean[] paused = {false};
+        try {
+            MidiLoopDialog.create(owner.getScene().getWindow(), melody.window(),
+                    session.midiParts(melody.window().file()), session.bars(),
+                    session.sequenceOf(melody.window().file()), session.bpm(),
+                    melody.instrument() == null ? Sounds.resolveSynth(DemoJam.LEAD_SYNTH) : melody.instrument().copy().synth(),
+                    () -> {
+                        if (playback.playing()) {
+                            playback.stop();
+                            paused[0] = true;
+                            showTransport();
+                        }
+                    }).showAndWait().ifPresent(edit -> {
+                session.changing(() -> {
+                    try {
+                        session.changeMidiWindow(track, edit.window());
+                    } catch (Exception failure) {
+                        throw new IllegalArgumentException(failure.getMessage(), failure);
+                    }
+                    session.setBars(edit.jamBars());
+                });
+                playback.takeNow();
+                viewPage = 0;
+                select(new Part.Melody(track));
+            });
+        } catch (Exception failure) {
+            showError(failure);
+        } finally {
+            if (paused[0]) {
+                try {
+                    playback.play();
+                    showTransport();
+                } catch (Exception failure) {
+                    showError(failure);
+                }
+            }
         }
     }
 
@@ -485,6 +608,18 @@ public final class Groovebox extends Application {
             chosenSlice = -1;
         }
         selected = next;
+        switch (next) {
+            case Part.Melody(int track) -> session.tracks().select(track);
+            case Part.Loop(int track) -> session.tracks().select(track);
+            case Part.DrumRow ignored -> {
+                for (int i = 0; i < session.tracks().size(); i++) {
+                    if (session.tracks().get(i) instanceof StudioTrack.Drums) {
+                        session.tracks().select(i);
+                        break;
+                    }
+                }
+            }
+        }
         if (next instanceof Part.DrumRow(int row)) {
             drumRow = row;
         }
@@ -596,13 +731,37 @@ public final class Groovebox extends Application {
                 }
             }
         }
-        Button add = new Button("+ loop");
+    }
+
+    /** The tracks scroll within the box, with both import buttons always in reach. */
+    private Node trackBar() {
+        ScrollPane scroll = trackScroll;
+        scroll.setFitToHeight(true);
+        scroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        scroll.setMinWidth(0);
+        scroll.setPrefHeight(52);
+        scroll.setStyle("-fx-background: " + Look.web(Look.BODY)
+                + "; -fx-background-color: transparent; -fx-padding: 0;");
+        HBox.setHgrow(scroll, Priority.ALWAYS);
+        Button midi = addTrackButton("+ MIDI");
+        midi.setTooltip(new Tooltip("Choose MIDI files, then select the track and range to add"));
+        midi.setOnAction(event -> chooseMidi(midi));
+        Button loop = addTrackButton("+ loop");
+        loop.setOnAction(event -> chooseLoop(loop));
+        HBox bar = new HBox(8, scroll, midi, loop);
+        bar.setAlignment(Pos.CENTER_LEFT);
+        return bar;
+    }
+
+    private static Button addTrackButton(String text) {
+        Button add = new Button(text);
         add.setFocusTraversable(false);
+        add.setMinWidth(Region.USE_PREF_SIZE);
         add.setStyle("-fx-background-color: transparent; -fx-border-color: " + Look.web(Look.BODY_EDGE)
                 + "; -fx-border-radius: 14; -fx-text-fill: " + Look.CHIP_OFF_TEXT + "; -fx-padding: 3 14 3 14;"
                 + " -fx-font-size: 13px; -fx-cursor: hand;");
-        add.setOnAction(event -> chooseLoop(add));
-        chips.getChildren().add(add);
+        return add;
     }
 
     private static String cutName(double beats) {
@@ -656,6 +815,11 @@ public final class Groovebox extends Application {
                 menu.getItems().add(patterns);
             }
             case StudioTrack.Melody melody -> {
+                if (melody.window() != null) {
+                    MenuItem range = new MenuItem("MIDI loop...");
+                    range.setOnAction(event -> chooseMidiWindow(chip, track));
+                    menu.getItems().add(range);
+                }
                 Menu sounds = new Menu("Sound");
                 ToggleGroup chosen = new ToggleGroup();
                 for (String name : Sounds.synthNames()) {
@@ -938,6 +1102,147 @@ public final class Groovebox extends Application {
 
     // ---- the box
 
+    /** A kit chosen from disk, with its file assignments shown after it has loaded successfully. */
+    private void chooseDrumKit(Node owner) {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Load drum samples folder");
+        if (drumFolder != null && Files.isDirectory(drumFolder)) chooser.setInitialDirectory(drumFolder.toFile());
+        File chosen = chooser.showDialog(owner.getScene().getWindow());
+        if (chosen == null) return;
+        try {
+            SampleBank kit = playback.loadDrumKit(chosen.toPath());
+            drumFolder = chosen.toPath();
+            session.setDrumSamplesFolder(drumFolder);
+            StringBuilder summary = new StringBuilder();
+            for (Drum drum : Drum.values()) {
+                Path source = kit.sourceFiles().get(drum);
+                summary.append(drum.name().toLowerCase(Locale.ROOT).replace('_', ' ')).append(": ")
+                        .append(source == null ? "synthesized" : source.getFileName()).append('\n');
+            }
+            Alert report = new Alert(Alert.AlertType.INFORMATION);
+            report.initOwner(owner.getScene().getWindow());
+            report.setTitle("Drum samples loaded");
+            report.setHeaderText(chosen.getName());
+            report.setContentText(summary.toString());
+            report.showAndWait();
+        } catch (Exception failure) {
+            showError(failure);
+        }
+    }
+
+    /** The same file actions as the track strip, with a fresh workspace and the optional demo. */
+    private MenuBar menuBar() {
+        MenuBar bar = new MenuBar();
+        bar.setStyle("-fx-background-color: transparent;");
+        Menu file = new Menu("_File");
+        MenuItem fresh = new MenuItem("New session");
+        fresh.setAccelerator(KeyCombination.keyCombination("Shortcut+N"));
+        fresh.setOnAction(event -> replaceJam(session::startEmpty));
+        MenuItem open = new MenuItem("Open session...");
+        open.setAccelerator(KeyCombination.keyCombination("Shortcut+O"));
+        open.setOnAction(event -> chooseProject(bar));
+        MenuItem save = new MenuItem("Save session");
+        save.setAccelerator(KeyCombination.keyCombination("Shortcut+S"));
+        save.setOnAction(event -> saveProject(bar, false));
+        MenuItem saveAs = new MenuItem("Save session as...");
+        saveAs.setAccelerator(KeyCombination.keyCombination("Shortcut+Shift+S"));
+        saveAs.setOnAction(event -> saveProject(bar, true));
+        MenuItem midi = new MenuItem("Import MIDI...");
+        midi.setAccelerator(KeyCombination.keyCombination("Shortcut+I"));
+        midi.setOnAction(event -> chooseMidi(bar));
+        MenuItem audio = new MenuItem("Import audio loop...");
+        audio.setAccelerator(KeyCombination.keyCombination("Shortcut+Shift+I"));
+        audio.setOnAction(event -> chooseLoop(bar));
+        MenuItem drums = new MenuItem("Load drum samples folder...");
+        drums.setOnAction(event -> chooseDrumKit(bar));
+        MenuItem demo = new MenuItem("Load demo");
+        demo.setOnAction(event -> replaceJam(() -> DemoJam.startIn(session)));
+        MenuItem exit = new MenuItem("Exit");
+        exit.setOnAction(event -> Platform.exit());
+        file.getItems().addAll(fresh, open, save, saveAs, new SeparatorMenuItem(), midi, audio, drums,
+                new SeparatorMenuItem(), demo, new SeparatorMenuItem(), exit);
+        Menu transport = new Menu("_Playback");
+        MenuItem toggle = new MenuItem("Play / Stop");
+        toggle.setOnAction(event -> togglePlayback());
+        transport.getItems().add(toggle);
+        bar.getMenus().addAll(file, transport);
+        return bar;
+    }
+
+    /** A different jam starts stopped, with the first drum row visible and its tempo on the strip. */
+    private void replaceJam(Runnable load) {
+        playback.stop();
+        load.run();
+        projectFile = null;
+        ((Stage)trackScroll.getScene().getWindow()).setTitle("Groovebox");
+        refreshJamView();
+    }
+
+    private void refreshJamView() {
+        drumRow = 0;
+        viewPage = 0;
+        chosenSlice = -1;
+        tempo.show(session.bpm());
+        showTransport();
+        int track = session.tracks().selectedIndex();
+        select(switch (session.tracks().selected()) {
+            case StudioTrack.Drums drums -> new Part.DrumRow(0);
+            case StudioTrack.Melody melody -> new Part.Melody(track);
+            case StudioTrack.Loop loop -> new Part.Loop(track);
+        });
+        trackScroll.setHvalue(0);
+    }
+
+    private FileChooser projectChooser() {
+        FileChooser chooser = new FileChooser();
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Groovebox sessions", "*.properties"));
+        if (projectFile != null && Files.isDirectory(projectFile.getParent())) {
+            chooser.setInitialDirectory(projectFile.getParent().toFile());
+            chooser.setInitialFileName(projectFile.getFileName().toString());
+        } else chooser.setInitialFileName("jam.properties");
+        return chooser;
+    }
+
+    private void chooseProject(Node owner) {
+        FileChooser chooser = projectChooser();
+        chooser.setTitle("Open session");
+        File chosen = chooser.showOpenDialog(owner.getScene().getWindow());
+        if (chosen != null) {
+            try { openProject(chosen.toPath()); }
+            catch (Exception failure) { showError(failure); }
+        }
+    }
+
+    /** A failed read leaves the workspace playing; a successfully opened project starts stopped. */
+    private void openProject(Path file) throws Exception {
+        SampleBank kit = session.open(file);
+        playback.stop();
+        drumFolder = session.drumSamplesFolder();
+        playback.useDrumKit(kit == null ? defaultDrumKit : kit);
+        projectFile = file.toAbsolutePath().normalize();
+        ((Stage)trackScroll.getScene().getWindow()).setTitle("Groovebox · " + projectFile.getFileName());
+        refreshJamView();
+    }
+
+    private void saveProject(Node owner, boolean chooseFile) {
+        Path target = projectFile;
+        if (chooseFile || target == null) {
+            FileChooser chooser = projectChooser();
+            chooser.setTitle("Save session");
+            File chosen = chooser.showSaveDialog(owner.getScene().getWindow());
+            if (chosen == null) return;
+            target = chosen.toPath();
+            if (!target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".properties")) {
+                target = target.resolveSibling(target.getFileName() + ".properties");
+            }
+        }
+        try {
+            session.save(target);
+            projectFile = target.toAbsolutePath().normalize();
+            ((Stage)owner.getScene().getWindow()).setTitle("Groovebox · " + projectFile.getFileName());
+        } catch (Exception failure) { showError(failure); }
+    }
+
     /**
      * The box as its sketch has it, top to bottom: the screen with the knobs beside it, play and
      * the tempo with the performance strips, the pads, the tracks, and a line saying what it runs
@@ -954,7 +1259,7 @@ public final class Groovebox extends Application {
         showShift();
         Region beforeShift = new Region();
         HBox.setHgrow(beforeShift, Priority.ALWAYS);
-        HBox title = new HBox(12, name, kind, beforeShift, shift);
+        HBox title = new HBox(12, name, menuBar(), kind, beforeShift, shift);
         title.setAlignment(Pos.CENTER_LEFT);
 
         knobs.setHgap(8);
@@ -1016,7 +1321,7 @@ public final class Groovebox extends Application {
         HBox.setHgrow(gap, Priority.ALWAYS);
         HBox footer = new HBox(made, gap, status);
 
-        VBox body = new VBox(16, title, top, transport, pads.node(), chips, footer);
+        VBox body = new VBox(16, title, top, transport, pads.node(), trackBar(), footer);
         VBox.setMargin(footer, new Insets(2, 0, 0, 0));
         body.setPadding(new Insets(20, 24, 16, 24));
         body.setPrefWidth(INSIDE + 48);
