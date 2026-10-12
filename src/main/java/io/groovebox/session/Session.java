@@ -2,6 +2,7 @@ package io.groovebox.session;
 
 import io.groovebox.audio.AudioEngine;
 import io.groovebox.audio.Sample;
+import io.groovebox.audio.SampleBank;
 import io.groovebox.audio.WavSampleLoader;
 import io.groovebox.livecode.LiveCode;
 import io.groovebox.livecode.LiveCodeException;
@@ -54,6 +55,7 @@ public final class Session {
     private final Map<Path, Sample> loopAudio = new HashMap<>();
 
     private JamConfig jamConfig;
+    private Path drumSamplesFolder;
     private TrackList tracks;
     private final List<GridRow> rows = new ArrayList<>();
     private String code = "";
@@ -84,7 +86,7 @@ public final class Session {
      */
     public void load(Path config) throws Exception {
         JamConfig next = JamConfig.fromPropertiesFile(config);
-        Path file = next.file().toAbsolutePath().normalize();
+        Path file = legacyMidiFile(config, next.file());
         Sequence nextSequence = sequenceOf(file);
         PitchSynth nextSynth = Sounds.resolveSynth(next.synth());
         Instrument nextInstrument = Instrument.of(next.synth());
@@ -135,6 +137,18 @@ public final class Session {
         });
     }
 
+    private static Path legacyMidiFile(Path config, Path file) {
+        if (file.isAbsolute()) return file.normalize();
+        Path folder = config.toAbsolutePath().normalize().getParent();
+        // Old MusicJam configs use project-relative src/main/resources paths, even when the
+        // config itself is inside that directory. Try its ancestors before the current folder.
+        for (int level = 0; folder != null && level < 4; level++, folder = folder.getParent()) {
+            Path candidate = folder.resolve(file).normalize();
+            if (java.nio.file.Files.isRegularFile(candidate)) return candidate;
+        }
+        return file.toAbsolutePath().normalize();
+    }
+
     /** A jam of the tracks given, the grid empty and nothing to undo: where a jam starts that no config describes. */
     public void startWith(TrackList next, PitchSynth fallback) {
         changing(() -> {
@@ -172,6 +186,54 @@ public final class Session {
     /** The config the jam was loaded from, for what it says about the world outside it; null for a jam made in code. */
     public JamConfig config() {
         return jamConfig;
+    }
+
+    /** The custom kit used by the box, kept with the project so its sounds can be restored. */
+    public Path drumSamplesFolder() { return drumSamplesFolder; }
+
+    public void setDrumSamplesFolder(Path folder) { drumSamplesFolder = folder; }
+
+    /** Writes the whole workspace, including the instruments' current knobs, to a properties file. */
+    public void save(Path file) throws Exception {
+        SessionFile.write(this, file);
+    }
+
+    /** Opens a complete workspace or an older single-MIDI config, returning its prepared custom kit, or null. */
+    public SampleBank open(Path file) throws Exception {
+        var properties = SessionFile.readProperties(file);
+        Session draft = new Session();
+        SampleBank preparedKit = null;
+        if (!properties.containsKey("session.version")) {
+            draft.load(file);
+        } else {
+            SessionFile.State state = SessionFile.read(file, properties);
+            draft.tracks = TrackList.drumsOnly();
+            draft.tracks.restore(state.tracks(), state.selected());
+            draft.rows.addAll(state.rows());
+            draft.bpm = state.bpm(); draft.bars = state.bars();
+            draft.scale = state.scale(); draft.chords = state.chords(); draft.code = state.code();
+            draft.drumSamplesFolder = state.drumFolder();
+            draft.fallbackSynth = Sounds.resolveSynth(DemoJam.LEAD_SYNTH);
+            if (state.drumFolder() != null) preparedKit = SampleBank.loadKit(state.drumFolder(), AudioEngine.DEFAULT_SAMPLE_RATE);
+            for (StudioTrack track : state.tracks()) {
+                if (track instanceof StudioTrack.Melody melody && melody.source() instanceof MidiWindow window) {
+                    draft.sequenceOf(window.file());
+                }
+            }
+            // Rendering the draft reads every MIDI source before the current workspace changes.
+            draft.publish();
+        }
+        changing(() -> {
+            history.forget();
+            tracks = draft.tracks; rows.clear(); rows.addAll(draft.rows);
+            bpm = draft.bpm; bars = draft.bars; scale = draft.scale;
+            chords = draft.chords; code = draft.code; jamConfig = draft.jamConfig;
+            fallbackSynth = draft.fallbackSynth; drumSamplesFolder = draft.drumSamplesFolder;
+            sequences.clear(); sequences.putAll(draft.sequences);
+            windows.clear(); windows.putAll(draft.windows); windowsLengthBeats = draft.windowsLengthBeats;
+            loopAudio.clear(); loopAudio.putAll(draft.loopAudio);
+        });
+        return preparedKit;
     }
 
     public TrackList tracks() {

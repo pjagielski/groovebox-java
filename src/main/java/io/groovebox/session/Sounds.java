@@ -17,6 +17,7 @@ import javax.sound.midi.Sequence;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.HashMap;
 
 /**
  * What a jam can name: the synth patches a melody is played by, and the drum patterns a grid is
@@ -72,6 +73,17 @@ public final class Sounds {
     private Sounds() {
     }
 
+    private static final Map<String, List<DrumTrack>> ALL_DRUM_PATTERNS = legacyPatternNames();
+
+    private static Map<String, List<DrumTrack>> legacyPatternNames() {
+        Map<String, List<DrumTrack>> patterns = new HashMap<>(DRUM_PATTERNS);
+        // MusicJam's song names refer to the same grooves, so its configs need no transcription.
+        Map.of("shape", "dancehall", "worry", "four-floor", "dre", "hip-hop",
+                "giorgio", "disco", "insomnia", "house")
+                .forEach((name, groove) -> patterns.put(name, DRUM_PATTERNS.get(groove)));
+        return Map.copyOf(patterns);
+    }
+
     /** The synths a jam can name, in the order of their names. */
     public static List<String> synthNames() {
         return SYNTHS.keySet().stream().sorted().toList();
@@ -87,7 +99,7 @@ public final class Sounds {
 
     /** The named drum patterns a jam can draw its grid from ({@code drums=} in a jam's config). */
     public static Map<String, List<DrumTrack>> drumPatterns() {
-        return DRUM_PATTERNS;
+        return ALL_DRUM_PATTERNS;
     }
 
     /** A window of {@code bars} bars from {@code startBar} on of a MIDI file's track; {@code bars} may be a fraction of a bar. */
