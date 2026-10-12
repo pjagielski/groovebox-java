@@ -151,7 +151,6 @@ public final class Groovebox extends Application {
     private VBox mixerPane;
     private HBox transport;
     private Node globalEffects;
-    private Button effectsShortcut;
     private ToggleButton instrumentTab;
     private ToggleButton mixerTab;
     private boolean mixing;
@@ -784,8 +783,8 @@ public final class Groovebox extends Application {
     }
 
     /**
-     * A track's chip, with its mute and solo beside it as on the studio's list. A track that is
-     * not heard - muted, or left out by a solo elsewhere - shows it by its chip fading.
+     * A track's chip picks its instrument. A track not heard because of the mixer shows it
+     * by its chip fading, while volume, mute and solo are adjusted in the mixer.
      */
     private Node chip(String name, Part part, boolean on, int track) {
         Button chip = new Button(name);
@@ -797,19 +796,7 @@ public final class Groovebox extends Application {
                 + " -fx-padding: 3 16 3 16; -fx-font-size: 13px; -fx-cursor: hand;");
         chip.setOpacity(session.heard(track) ? 1.0 : 0.45);
         chip.setOnAction(event -> select(part));
-        StudioTrack shown = session.tracks().get(track);
-        Button mute = toggle("M", shown.muted(), Look.PLAY, "Mute " + name, () -> {
-            session.setMuted(track, !session.tracks().get(track).muted());
-            showChips();
-        });
-        Button solo = toggle("S", shown.soloed(), Look.PAD_STRONG, "Solo " + name, () -> {
-            session.setSoloed(track, !session.tracks().get(track).soloed());
-            showChips();
-        });
-        HBox group = new HBox(4, chip, mute, solo);
-        group.setAlignment(Pos.CENTER_LEFT);
-        HBox.setMargin(group, new Insets(0, 10, 0, 0));
-        return group;
+        return chip;
     }
 
     /**
@@ -860,19 +847,6 @@ public final class Groovebox extends Application {
             }
         }
         return menu;
-    }
-
-    private static Button toggle(String letter, boolean on, String colour, String tip, Runnable onPress) {
-        Button toggle = new Button(letter);
-        toggle.setFocusTraversable(false);
-        toggle.setPrefSize(26, 26);
-        toggle.setMinSize(26, 26);
-        toggle.setStyle("-fx-background-color: " + (on ? colour : Look.CHIP_OFF) + "; -fx-text-fill: "
-                + (on ? "white" : Look.CHIP_OFF_TEXT) + "; -fx-background-radius: 13; -fx-padding: 0;"
-                + " -fx-font-size: 11px; -fx-font-weight: bold; -fx-cursor: hand;");
-        Tooltip.install(toggle, new Tooltip(tip));
-        toggle.setOnAction(event -> onPress.run());
-        return toggle;
     }
 
     /** One knob of a page: what it is called, and how it is made when it is shown. */
@@ -1275,6 +1249,7 @@ public final class Groovebox extends Application {
         instrumentTab = new ToggleButton("Instrument"); instrumentTab.setId("view-instrument");
         mixerTab = new ToggleButton("Mixer"); mixerTab.setId("view-mixer");
         instrumentTab.setToggleGroup(views); mixerTab.setToggleGroup(views); instrumentTab.setSelected(true);
+        styleViewTab(instrumentTab); styleViewTab(mixerTab);
         instrumentTab.setOnAction(event -> showMixer(false));
         mixerTab.setOnAction(event -> showMixer(true));
         HBox title = new HBox(12, name, menuBar(), instrumentTab, mixerTab, beforeShift, shift);
@@ -1330,9 +1305,7 @@ public final class Groovebox extends Application {
         tempo.show(session.bpm());
         globalEffects = performance(); globalEffects.setId("global-effects");
         globalEffects.setVisible(false);
-        effectsShortcut = new Button("Global effects → Mixer");
-        effectsShortcut.setOnAction(event -> showMixer(true));
-        transport = new HBox(STRIP_GAP + 6, play, tempo.node(), effectsShortcut);
+        transport = new HBox(STRIP_GAP + 6, play, tempo.node());
         transport.setId("transport"); play.setId("play-stop");
         transport.setAlignment(Pos.CENTER_LEFT);
 
@@ -1378,15 +1351,23 @@ public final class Groovebox extends Application {
         globalEffects.setVisible(active);
         instrumentView.getChildren().remove(transport);
         mixerPane.getChildren().remove(transport);
-        transport.getChildren().removeAll(mixer.inspector(), effectsShortcut);
-        transport.getChildren().add(active ? mixer.inspector() : effectsShortcut);
+        transport.getChildren().remove(mixer.inspector());
+        if (active) transport.getChildren().add(mixer.inspector());
         if (active) mixerPane.getChildren().add(1, transport);
         else instrumentView.getChildren().add(1, transport);
         instrumentView.setVisible(!active); instrumentView.setManaged(!active);
         mixerPane.setVisible(active); mixerPane.setManaged(active);
         instrumentTab.setSelected(!active); mixerTab.setSelected(active);
+        styleViewTab(instrumentTab); styleViewTab(mixerTab);
         shift.setVisible(!active); shift.setManaged(!active);
         if (active) mixer.refresh(playback.live() == null ? MixLevels.SILENT : playback.live().levels());
+    }
+
+    private static void styleViewTab(ToggleButton tab) {
+        tab.setFocusTraversable(false);
+        tab.setStyle("-fx-background-color: " + (tab.isSelected() ? Look.CHIP_ON : Look.CHIP_OFF)
+                + "; -fx-text-fill: " + (tab.isSelected() ? Look.CHIP_ON_TEXT : Look.CHIP_OFF_TEXT)
+                + "; -fx-background-radius: 14; -fx-padding: 3 14; -fx-font-size: 13px; -fx-cursor: hand;");
     }
 
     /** The effects played over the whole mix, with explicit locks and one release for all cards. */
