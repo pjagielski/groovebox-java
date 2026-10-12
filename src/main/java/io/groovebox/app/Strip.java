@@ -91,6 +91,14 @@ final class Strip {
                 lock.setSelected(!lock.isSelected()); choose(lock.isSelected() ? chosen : OFF); event.consume();
             }
         });
+        // The lock consumes the press, so its drag and release must not reach SliderSkin:
+        // the skin has no drag origin for this gesture and would dereference null.
+        card.addEventFilter(MouseEvent.MOUSE_DRAGGED, event -> {
+            if (event.isSecondaryButtonDown() || event.getButton() == MouseButton.SECONDARY) event.consume();
+        });
+        card.addEventFilter(MouseEvent.MOUSE_RELEASED, event -> {
+            if (event.getButton() == MouseButton.SECONDARY) event.consume();
+        });
     }
 
     Node node() { return card; }

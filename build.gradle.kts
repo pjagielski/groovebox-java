@@ -45,6 +45,21 @@ tasks.test {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
+// Real skin gestures need a display, but no audio device. Keep them explicitly runnable so
+// the offline suite remains usable on hosts without a window system.
+val uiTest = sourceSets.create("uiTest") {
+    compileClasspath += sourceSets.main.get().output + configurations.runtimeClasspath.get()
+    runtimeClasspath += output + compileClasspath
+}
+
+tasks.register<JavaExec>("uiGestureTest") {
+    group = "verification"
+    description = "Checks effect-slider mouse gestures against the real JavaFX skin (requires a display)."
+    dependsOn(uiTest.classesTaskName)
+    classpath = uiTest.runtimeClasspath
+    mainClass.set("io.groovebox.app.StripGestureLauncher")
+}
+
 // JavaFX loads its native libraries (windows, graphics) through System.load. Since JDK 24 that
 // warns on every start unless native access is granted, and a later release will refuse it
 // outright, so every task that may bring JavaFX up grants it.
