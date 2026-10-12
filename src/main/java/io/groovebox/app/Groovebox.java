@@ -19,6 +19,7 @@ import javafx.scene.control.RadioMenuItem;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.ToggleGroup;
+import javafx.scene.control.ToggleButton;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
@@ -36,6 +37,7 @@ import io.groovebox.model.Drum;
 import javafx.stage.Stage;
 import io.groovebox.session.Sounds;
 import io.groovebox.audio.AudioEngine;
+import io.groovebox.audio.MixLevels;
 import io.groovebox.audio.Sample;
 import io.groovebox.audio.SampleBank;
 import io.groovebox.model.Note;
@@ -82,7 +84,8 @@ import java.util.function.UnaryOperator;
  * selected row's steps the pads are and a press on one cycles, or a melody, whose bar the pads
  * show note by note and a press on one sounds. Which drum row is a matter for the screen, where
  * the whole kit is: a click on a row picks it, and so do the up and down arrows. The knobs
- * are the chip's: a drum row's level, a melody's synth. Play and tempo sit below the screen.
+ * are the chip's: a drum row's level, a melody's synth. The mixer shares the same space and
+ * holds the channel faders and global effects. Play and tempo stay in reach in both views.
  * Space plays and stops.
  *
  * <p>Starts from {@code --config <file>} when given one - its melody, its tempo and its drums -
@@ -143,6 +146,15 @@ public final class Groovebox extends Application {
         shown = "";
     });
     private final List<Strip> strips = new ArrayList<>();
+    private MixerView mixer;
+    private VBox instrumentView;
+    private VBox mixerPane;
+    private HBox transport;
+    private Node globalEffects;
+    private Button effectsShortcut;
+    private ToggleButton instrumentTab;
+    private ToggleButton mixerTab;
+    private boolean mixing;
     // the knobs' second page, printed in orange under each of them; latched, not held: a mouse
     // cannot hold one button and turn a knob at the same time
     private final Button shift = new Button("shift");
@@ -170,7 +182,7 @@ public final class Groovebox extends Application {
             if (event.getCode() == KeyCode.SPACE) {
                 togglePlayback();
                 event.consume();
-            } else if (event.getCode() == KeyCode.TAB) {
+            } else if (event.getCode() == KeyCode.TAB && !mixing) {
                 // Tab, since Shift on the keyboard already turns a knob in fine steps
                 toggleShift();
                 event.consume();
@@ -178,6 +190,7 @@ public final class Groovebox extends Application {
         });
         // a handler rather than a filter: a knob with focus keeps its arrows to itself
         scene.addEventHandler(KeyEvent.KEY_PRESSED, event -> {
+            if (mixing) return;
             if (selected instanceof Part.DrumRow(int row)
                     && (event.getCode() == KeyCode.UP || event.getCode() == KeyCode.DOWN)) {
                 int next = row + (event.getCode() == KeyCode.UP ? -1 : 1);
@@ -635,6 +648,7 @@ public final class Groovebox extends Application {
         return new AnimationTimer() {
             @Override
             public void handle(long now) {
+                if (mixing) mixer.refresh(playback.live() == null ? MixLevels.SILENT : playback.live().levels());
                 if (playback.live() != null && playback.live().failure().isPresent()) {
                     Throwable failure = playback.live().failure().get();
                     togglePlayback();
@@ -1251,15 +1265,19 @@ public final class Groovebox extends Application {
     private StackPane layout() {
         Label name = new Label("groovebox");
         name.setStyle("-fx-font-size: 17px; -fx-font-weight: bold; -fx-text-fill: " + Look.web(Look.INK) + ";");
-        Label kind = new Label("groovebox · pure java");
-        kind.setStyle("-fx-font-size: 13px; -fx-text-fill: " + Look.web(Look.QUIET_INK) + ";");
         shift.setFocusTraversable(false);
         shift.setOnAction(event -> toggleShift());
         Tooltip.install(shift, new Tooltip("The knobs' other page, printed in orange under them (Tab)"));
         showShift();
         Region beforeShift = new Region();
         HBox.setHgrow(beforeShift, Priority.ALWAYS);
-        HBox title = new HBox(12, name, menuBar(), kind, beforeShift, shift);
+        ToggleGroup views = new ToggleGroup();
+        instrumentTab = new ToggleButton("Instrument"); instrumentTab.setId("view-instrument");
+        mixerTab = new ToggleButton("Mixer"); mixerTab.setId("view-mixer");
+        instrumentTab.setToggleGroup(views); mixerTab.setToggleGroup(views); instrumentTab.setSelected(true);
+        instrumentTab.setOnAction(event -> showMixer(false));
+        mixerTab.setOnAction(event -> showMixer(true));
+        HBox title = new HBox(12, name, menuBar(), instrumentTab, mixerTab, beforeShift, shift);
         title.setAlignment(Pos.CENTER_LEFT);
 
         knobs.setHgap(8);
@@ -1310,8 +1328,28 @@ public final class Groovebox extends Application {
         play.setOnAction(event -> togglePlayback());
         showTransport();
         tempo.show(session.bpm());
-        HBox transport = new HBox(STRIP_GAP + 6, play, tempo.node(), performance());
+        globalEffects = performance(); globalEffects.setId("global-effects");
+        effectsShortcut = new Button("Global effects → Mixer");
+        effectsShortcut.setOnAction(event -> showMixer(true));
+        transport = new HBox(STRIP_GAP + 6, play, tempo.node(), effectsShortcut);
+        transport.setId("transport"); play.setId("play-stop");
         transport.setAlignment(Pos.CENTER_LEFT);
+
+        instrumentView = new VBox(16, top, transport, pads.node(), trackBar());
+        instrumentView.setId("instrument-view");
+        mixer = new MixerView(session, track -> select(switch (session.tracks().get(track)) {
+            case StudioTrack.Drums ignored -> new Part.DrumRow(drumRow);
+            case StudioTrack.Melody ignored -> new Part.Melody(track);
+            case StudioTrack.Loop ignored -> new Part.Loop(track);
+        }), () -> showMixer(false), track -> chooseMidiWindow(mixer.node(), track), () -> {
+            showChips(); shown = "";
+        });
+        mixerPane = new VBox(16, mixer.node());
+        mixerPane.setVisible(false); mixerPane.setManaged(false);
+        StackPane viewsPane = new StackPane(instrumentView, mixerPane);
+        viewsPane.setAlignment(Pos.TOP_LEFT);
+        // Reserve the original instrument's height, so switching never resizes the box.
+        viewsPane.setMinHeight(396); viewsPane.setPrefHeight(396); viewsPane.setMaxHeight(396);
 
         status.setStyle("-fx-font-family: 'Consolas', monospace; -fx-font-size: 12px; -fx-text-fill: "
                 + Look.web(Look.QUIET_INK) + ";");
@@ -1321,7 +1359,7 @@ public final class Groovebox extends Application {
         HBox.setHgrow(gap, Priority.ALWAYS);
         HBox footer = new HBox(made, gap, status);
 
-        VBox body = new VBox(16, title, top, transport, pads.node(), trackBar(), footer);
+        VBox body = new VBox(16, title, viewsPane, footer);
         VBox.setMargin(footer, new Insets(2, 0, 0, 0));
         body.setPadding(new Insets(20, 24, 16, 24));
         body.setPrefWidth(INSIDE + 48);
@@ -1332,6 +1370,21 @@ public final class Groovebox extends Application {
         room.setPadding(new Insets(20));
         room.setStyle("-fx-background-color: " + Look.web(Look.ROOM) + ";");
         return room;
+    }
+
+    private void showMixer(boolean active) {
+        mixing = active;
+        instrumentView.getChildren().remove(transport);
+        mixerPane.getChildren().remove(transport);
+        transport.getChildren().removeAll(globalEffects, effectsShortcut);
+        transport.getChildren().add(active ? globalEffects : effectsShortcut);
+        if (active) mixerPane.getChildren().add(transport);
+        else instrumentView.getChildren().add(1, transport);
+        instrumentView.setVisible(!active); instrumentView.setManaged(!active);
+        mixerPane.setVisible(active); mixerPane.setManaged(active);
+        instrumentTab.setSelected(!active); mixerTab.setSelected(active);
+        shift.setVisible(!active); shift.setManaged(!active);
+        if (active) mixer.refresh(playback.live() == null ? MixLevels.SILENT : playback.live().levels());
     }
 
     /** The effects played over the whole mix: a strip each, held to play, right-clicked to lock. */

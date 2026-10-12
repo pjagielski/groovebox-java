@@ -15,7 +15,8 @@ import java.io.IOException;
 /** A versioned properties document for the entire workspace, with asset paths relative to its file. */
 final class SessionFile {
     record State(double bpm, double bars, Scale scale, String chords, String code,
-                 List<StudioTrack> tracks, int selected, List<GridRow> rows, Path drumFolder) {}
+                 List<StudioTrack> tracks, int selected, List<GridRow> rows, Path drumFolder,
+                 float masterGain, boolean masterMuted) {}
 
     private final Properties properties;
     private final Path base;
@@ -36,6 +37,8 @@ final class SessionFile {
         document.put("session.version", 1);
         document.put("bpm", session.bpm());
         document.put("bars", session.bars());
+        document.put("master.gain", session.masterGain());
+        document.put("master.muted", session.masterMuted());
         document.put("key", session.scale().root());
         document.put("scale", session.scale().mode());
         document.put("chords", session.chords());
@@ -101,7 +104,9 @@ final class SessionFile {
         }
         return new State(bpm, bars, new Scale(root, Scale.Mode.valueOf(d.text("scale"))),
                 d.text("chords"), d.text("code"), List.copyOf(tracks), selected, List.copyOf(rows),
-                properties.containsKey("drumSamplesFolder") ? d.path("drumSamplesFolder") : null);
+                properties.containsKey("drumSamplesFolder") ? d.path("drumSamplesFolder") : null,
+                properties.containsKey("master.gain") ? d.unit("master.gain") : 1,
+                properties.containsKey("master.muted") && d.bool("master.muted"));
     }
 
     private void writeTrack(String k, StudioTrack track) throws Exception {

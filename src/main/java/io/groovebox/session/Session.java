@@ -61,6 +61,8 @@ public final class Session {
     private String code = "";
     private double bpm = 120;
     private double bars = 8;
+    private float masterGain = 1;
+    private boolean masterMuted;
     // the key the jam is in: what the roll shades its rows and keys by
     private Scale scale = new Scale(0, Scale.Mode.ANY);
     // the chords the jam goes round, one to a bar, as they are said: Cm Ab Eb Bb
@@ -131,6 +133,7 @@ public final class Session {
             }
             code = "";
             chords = "";
+            masterGain = 1; masterMuted = false;
             scale = new Scale(0, Scale.Mode.ANY);
             setBpm(120);
             bars = 8;
@@ -154,6 +157,7 @@ public final class Session {
         changing(() -> {
             history.forget();
             tracks = next;
+            masterGain = 1; masterMuted = false;
             fallbackSynth = fallback;
             rows.clear();
         });
@@ -169,6 +173,7 @@ public final class Session {
             history.forget();
             jamConfig = null;
             tracks = next;
+            masterGain = 1; masterMuted = false;
             fallbackSynth = fallback;
             rows.clear();
             pattern.forEach(track -> rows.add(GridRow.fromTrack(track)));
@@ -211,6 +216,7 @@ public final class Session {
             draft.tracks.restore(state.tracks(), state.selected());
             draft.rows.addAll(state.rows());
             draft.bpm = state.bpm(); draft.bars = state.bars();
+            draft.masterGain = state.masterGain(); draft.masterMuted = state.masterMuted();
             draft.scale = state.scale(); draft.chords = state.chords(); draft.code = state.code();
             draft.drumSamplesFolder = state.drumFolder();
             draft.fallbackSynth = Sounds.resolveSynth(DemoJam.LEAD_SYNTH);
@@ -227,6 +233,7 @@ public final class Session {
             history.forget();
             tracks = draft.tracks; rows.clear(); rows.addAll(draft.rows);
             bpm = draft.bpm; bars = draft.bars; scale = draft.scale;
+            masterGain = draft.masterGain; masterMuted = draft.masterMuted;
             chords = draft.chords; code = draft.code; jamConfig = draft.jamConfig;
             fallbackSynth = draft.fallbackSynth; drumSamplesFolder = draft.drumSamplesFolder;
             sequences.clear(); sequences.putAll(draft.sequences);
@@ -245,6 +252,19 @@ public final class Session {
     public double bpm() {
         return bpm;
     }
+
+    /** The local stereo output's level, applied after the global effects. */
+    public float masterGain() { return masterGain; }
+
+    public boolean masterMuted() { return masterMuted; }
+
+    public void setMasterGain(float gain) {
+        if (!Float.isFinite(gain) || gain < 0 || gain > 1) throw new IllegalArgumentException("Invalid master gain");
+        masterGain = gain;
+        publish();
+    }
+
+    public void setMasterMuted(boolean muted) { masterMuted = muted; publish(); }
 
     /** A new tempo, heard at once; a delay locked to the beat follows it, on every track. */
     public void setBpm(double next) {
@@ -745,7 +765,7 @@ public final class Session {
                 channels.add(channel);
             }
         }
-        jam.set(new AudioEngine.Jam(song, synths, channels));
+        jam.set(new AudioEngine.Jam(song, synths, channels, masterMuted ? 0 : masterGain));
     }
 
     /**

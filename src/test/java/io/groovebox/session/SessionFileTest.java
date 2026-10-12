@@ -17,11 +17,29 @@ class SessionFileTest {
     @TempDir Path directory;
 
     @Test
+    void sessionsSavedBeforeTheMixerOpenWithAnUnmutedUnityMaster() throws Exception {
+        Session before = new Session(); before.startEmpty();
+        Path file = directory.resolve("old-session.properties"); before.save(file);
+        var properties = SessionFile.readProperties(file);
+        properties.remove("master.gain"); properties.remove("master.muted");
+        try (var writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) { properties.store(writer, "Old version 1 session"); }
+        Session after = new Session(); after.startEmpty();
+        after.setMasterGain(0.2f); after.setMasterMuted(true);
+        after.open(file);
+        assertEquals(1, after.masterGain());
+        assertFalse(after.masterMuted());
+        after.setMasterMuted(true); after.startEmpty();
+        assertEquals(1, after.masterGain()); assertFalse(after.masterMuted());
+    }
+
+    @Test
     void theWholeDemoAndEveryInstrumentSettingSurviveARoundTrip() throws Exception {
         Session before = new Session();
         DemoJam.startIn(before);
         before.setBpm(93);
         before.setBars(3.75);
+        before.setMasterGain(0.37f);
+        before.setMasterMuted(true);
         before.setScale(new Scale(3, Scale.Mode.MINOR));
         before.setCode("bd sd hh");
         before.setMuted(2, true);
@@ -43,6 +61,8 @@ class SessionFileTest {
 
         assertEquals(before.bpm(), after.bpm());
         assertEquals(before.bars(), after.bars());
+        assertEquals(0.37f, after.masterGain());
+        assertTrue(after.masterMuted());
         assertEquals(before.scale(), after.scale());
         assertEquals(before.chords(), after.chords());
         assertEquals(before.code(), after.code());

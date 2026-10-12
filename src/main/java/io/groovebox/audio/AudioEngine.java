@@ -304,8 +304,14 @@ public final class AudioEngine {
      */
     private static void renderVoices(VoiceSlot[] voices, float[] mix, TrackGains gains,
                                      long blockStart, long fromFrame, long toFrame) {
+        renderVoices(voices, mix, gains, blockStart, fromFrame, toFrame, null);
+    }
+
+    private static void renderVoices(VoiceSlot[] voices, float[] mix, TrackGains gains,
+                                     long blockStart, long fromFrame, long toFrame, LevelMeters meters) {
         for (VoiceSlot voice : voices) {
             if (voice.active) {
+                voice.meter = meters;
                 voice.render(voice.out != null ? voice.out : mix, gains, blockStart, fromFrame, toFrame);
             }
         }
@@ -359,12 +365,17 @@ public final class AudioEngine {
      * notes are routed as a loop is queued, so a track sent out or brought back is heard so from
      * the next loop on.
      */
-    public record Jam(Song song, List<PitchSynth> synths, List<Integer> channels) {
+    public record Jam(Song song, List<PitchSynth> synths, List<Integer> channels, float masterGain) {
+
+        public Jam(Song song, List<PitchSynth> synths, List<Integer> channels) {
+            this(song, synths, channels, 1);
+        }
 
         /** The channel of a track played here rather than sent out. */
         public static final int HERE = -1;
 
         public Jam {
+            if (!Float.isFinite(masterGain) || masterGain < 0 || masterGain > 1) throw new IllegalArgumentException("Invalid master gain");
             Objects.requireNonNull(song, "song");
             synths = List.copyOf(synths);
             channels = List.copyOf(channels);
@@ -547,6 +558,11 @@ public final class AudioEngine {
         private final PerformanceFx performance = new PerformanceFx(sampleRate);
         // each track's gain, read from the jam every block and applied to its voices as they play
         private final TrackGains gains = new TrackGains(blockSize);
+        private final LevelMeters meters = new LevelMeters(blockSize);
+        private volatile MixLevels levels = MixLevels.SILENT;
+        private float lastMaster = -1;
+
+        MixLevels levels() { return levels; }
         // the pass each loop track is playing, so starting it again can end the one before it
         // keyed by the loop's channel when it has one, which stays the loop's however the tracks
         // around it are numbered; by its track otherwise
@@ -635,6 +651,8 @@ public final class AudioEngine {
         }
 
         void renderNext(float[] mix) {
+            Jam current = jams.get();
+            meters.begin(current.song().tracks().size());
             Arrays.fill(mix, 0.0f);
             for (SynthBus bus : buses.values()) {
                 Arrays.fill(bus.frames, 0.0f);
@@ -646,7 +664,7 @@ public final class AudioEngine {
                 sound(asked);
             }
             if (scheduling) {
-                Jam jam = jams.get();
+                Jam jam = current;
                 playing = channelsOf(jam);
                 gains.next(jam.song());
                 tempo = tempo.at(position, jam.song().bpm());
@@ -673,13 +691,21 @@ public final class AudioEngine {
             LiveHit hit;
             while ((hit = pollNext(blockEnd)) != null) {
                 long frame = Math.max(segmentStart, tempo.frameAt(hit.beat()));
-                renderVoices(voices, mix, gains, position, segmentStart, frame);
+                renderVoices(voices, mix, gains, position, segmentStart, frame, meters);
                 segmentStart = frame;
                 play(hit, frame);
             }
-            renderVoices(voices, mix, gains, position, segmentStart, blockEnd);
+            renderVoices(voices, mix, gains, position, segmentStart, blockEnd, meters);
             mixInBuses(mix);
             performance.process(mix, blockSize, tempo.bpm());
+            float target = current.masterGain();
+            if (lastMaster < 0) lastMaster = target;
+            for (int frame = 0; frame < blockSize; frame++) {
+                float gain = lastMaster + (target - lastMaster) * (frame + 1) / blockSize;
+                mix[frame * 2] *= gain; mix[frame * 2 + 1] *= gain;
+            }
+            lastMaster = target;
+            levels = meters.finish(mix);
             position = blockEnd;
         }
 
@@ -1339,6 +1365,9 @@ public final class AudioEngine {
             return renderer.performance();
         }
 
+        /** Actual levels of the most recently rendered block, safe for the window to read. */
+        public MixLevels levels() { return renderer.levels(); }
+
         public Optional<Throwable> failure() {
             return Optional.ofNullable(failure.get());
         }
@@ -1495,6 +1524,7 @@ public final class AudioEngine {
 
     /** One sounding note: either a rendered {@link Sample} played back, or a live {@link VoiceSource}. */
     private static final class VoiceSlot {
+        private LevelMeters meter;
         private Sample sample;
         private VoiceSource source;
         private long startFrame;
@@ -1553,6 +1583,7 @@ public final class AudioEngine {
                 float value = sample.valueAt((int) sampleFrame) * gain * trackGain(gains, outputFrame);
                 mix[outputFrame * CHANNELS] += value;
                 mix[outputFrame * CHANNELS + 1] += value;
+                if (meter != null) meter.add(track, outputFrame, value, value);
             }
             if (sampleFrame >= sample.frameCount()) {
                 active = false;
@@ -1572,6 +1603,7 @@ public final class AudioEngine {
                 source.next(stereo);
                 mix[outputFrame * CHANNELS] += stereo[0] * level;
                 mix[outputFrame * CHANNELS + 1] += stereo[1] * level;
+                if (meter != null) meter.add(track, outputFrame, stereo[0] * level, stereo[1] * level);
             }
         }
 
