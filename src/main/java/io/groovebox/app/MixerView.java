@@ -26,7 +26,7 @@ final class MixerView {
     private final ScrollPane scroll = new ScrollPane(channels);
     private final VBox root;
     private final HBox inspector;
-    private static final double METER_HEIGHT = 143;
+    private static final double METER_HEIGHT = 77;
     private final List<Channel> strips = new ArrayList<>();
     private final Channel master;
     private final Label detail = new Label();
@@ -43,7 +43,7 @@ final class MixerView {
         HBox.setHgrow(scroll, Priority.ALWAYS);
         master = new Channel(-1);
         HBox bank = new HBox(10, scroll, master.node);
-        bank.setPrefHeight(278); bank.setMinHeight(278); bank.setMaxHeight(278);
+        bank.setPrefHeight(212); bank.setMinHeight(212); bank.setMaxHeight(212);
         detail.setStyle("-fx-text-fill: " + Look.web(Look.QUIET_INK) + "; -fx-font-size: 12px;");
         detail.setMinWidth(0); detail.setMaxWidth(Double.MAX_VALUE); HBox.setHgrow(detail, Priority.ALWAYS);
         range.setOnAction(event -> editRange.accept(session.tracks().selectedIndex()));
@@ -51,7 +51,7 @@ final class MixerView {
         inspector = new HBox(10, detail, range, instrument); inspector.setAlignment(Pos.CENTER_LEFT);
         inspector.setMinWidth(0); HBox.setHgrow(inspector, Priority.ALWAYS);
         inspector.setMinHeight(30); inspector.setPrefHeight(30);
-        root = new VBox(10, bank, inspector); root.setId("mixer-view");
+        root = new VBox(bank); root.setId("mixer-view");
         refresh(MixLevels.SILENT);
     }
 

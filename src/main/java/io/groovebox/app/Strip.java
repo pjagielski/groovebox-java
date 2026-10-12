@@ -1,47 +1,35 @@
 package io.groovebox.app;
 
-import javafx.geometry.VPos;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.Node;
-import javafx.scene.canvas.Canvas;
-import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.input.MouseButton;
-import javafx.scene.input.MouseEvent;
-import javafx.scene.paint.Color;
-import javafx.scene.text.Font;
-import javafx.scene.text.FontWeight;
-import javafx.scene.text.TextAlignment;
+import javafx.scene.control.*;
+import javafx.scene.input.*;
+import javafx.scene.layout.*;
+import javafx.css.PseudoClass;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.DoubleConsumer;
 
-/**
- * A performance effect as a box has it: a short strip held with a finger. Press and the effect
- * comes in where the finger is; slide left or right and it follows; let go and it stops. A
- * right-click locks it where it is, and another lets it go.
- *
- * <p>The studio's {@code FxStrip} plays the same effects standing up, with a Lock button under it;
- * a box has no room for either, so this one lies down and shows its lock by its colour.
- *
- * <p>A strip either has zones, left to right — the stutter's slice lengths — or plays any value
- * from 0 at the left to 1 at the right. The listener hears the zone's index or the value, or -1
- * when the effect should stop.
- */
+/** An effect card played while held, with an explicit lock that keeps its setting after release. */
 final class Strip {
     static final double HEIGHT = 46;
     private static final double OFF = -1;
-    private static final Color FACE = Color.web(Look.CHIP_OFF);
-    private static final Color ON = Color.web(Look.PAD_STRONG);
-    private static final Color LOCKED = Color.web(Look.PLAY);
-    private static final Color TEXT = Color.web(Look.CHIP_OFF_TEXT);
-    private static final Color ON_TEXT = Color.web(Look.PAD_TEXT);
-
     private final String name;
     private final List<String> zones;
     private final DoubleConsumer onChange;
-    private final Canvas canvas;
+    private final VBox card;
+    private final Label state = new Label("OFF");
+    private final ToggleButton lock = new ToggleButton("Lock");
+    private final List<Button> buttons = new ArrayList<>();
+    private final Slider slider;
+    private final double neutral;
     private double active = OFF;
+    private double chosen;
     private boolean pressing;
-    private boolean locked;
+    private boolean updating;
 
     static Strip zones(String name, List<String> zones, double width, DoubleConsumer onChange) {
         return new Strip(name, List.copyOf(zones), width, onChange);
@@ -52,98 +40,107 @@ final class Strip {
     }
 
     private Strip(String name, List<String> zones, double width, DoubleConsumer onChange) {
-        this.name = name;
-        this.zones = zones;
-        this.onChange = onChange;
-        this.canvas = new Canvas(width, HEIGHT);
-        canvas.setCursor(javafx.scene.Cursor.HAND);
-        canvas.addEventHandler(MouseEvent.MOUSE_PRESSED, event -> {
-            if (event.getButton() == MouseButton.SECONDARY) {
-                // a lock takes what is playing, or where the click was when nothing is
-                locked = !locked;
-                choose(locked ? (pressing && active >= 0 ? active : valueAt(event.getX())) : pressing ? active : OFF);
-            } else if (event.getButton() == MouseButton.PRIMARY) {
-                pressing = true;
-                choose(valueAt(event.getX()));
-            }
-            draw();
-            event.consume();
-        });
-        canvas.addEventHandler(MouseEvent.MOUSE_DRAGGED, event -> {
-            if (pressing) {
-                choose(valueAt(event.getX()));
-            }
-            event.consume();
-        });
-        canvas.addEventHandler(MouseEvent.MOUSE_RELEASED, event -> {
-            if (event.getButton() == MouseButton.PRIMARY) {
-                pressing = false;
-                if (!locked) {
-                    choose(OFF);
-                }
-            }
-            event.consume();
-        });
-        draw();
-    }
-
-    Node node() {
-        return canvas;
-    }
-
-    /** Unlocks and stops, as if the finger had been lifted: what Stop does to every strip. */
-    void release() {
-        pressing = false;
-        locked = false;
-        choose(OFF);
-    }
-
-    private double valueAt(double x) {
-        double width = canvas.getWidth();
+        this.name = name; this.zones = zones; this.onChange = onChange;
+        neutral = name.equals("Filter") ? 0.5 : 0; chosen = neutral;
+        String id = name.toLowerCase(Locale.ROOT);
+        Label title = new Label(name);
+        title.setStyle("-fx-font-size: 12px; -fx-text-fill: " + Look.web(Look.INK) + ";");
+        state.setStyle("-fx-font: 10px Consolas; -fx-text-fill: #66685e;");
+        lock.setId("fx-lock-" + id); lock.setAccessibleText("Lock " + name);
+        lock.getStyleClass().add("fx-lock");
+        lock.setOnAction(event -> { if (lock.isSelected()) choose(chosen); else if (!pressing) choose(OFF); });
+        HBox header = new HBox(8, title, spacer(), state, lock); header.setAlignment(Pos.CENTER_LEFT);
+        card = new VBox(5, header); card.setPadding(new Insets(7, 11, 7, 11));
+        card.setId("fx-" + id); card.getStyleClass().add("fx-card");
+        card.setMinWidth(0); card.setPrefWidth(width); card.setMaxWidth(Double.MAX_VALUE);
+        card.setMinHeight(72); card.setPrefHeight(72); card.setMaxHeight(72);
+        HBox.setHgrow(card, Priority.ALWAYS);
         if (zones.isEmpty()) {
-            return Math.max(0, Math.min(1, x / width));
+            slider = new Slider(0, 1, neutral); slider.setBlockIncrement(0.025);
+            slider.setId("fx-slider-" + id); slider.setAccessibleText("Global " + name);
+            slider.getStyleClass().add("fx-slider");
+            if (name.equals("Filter")) slider.getStyleClass().add("fx-filter-slider");
+            slider.setPrefHeight(18); slider.setMinHeight(18); slider.setMaxHeight(18);
+            slider.valueProperty().addListener((obs, was, value) -> {
+                if (updating) return;
+                chosen = value.doubleValue();
+                if (pressing || lock.isSelected()) choose(chosen);
+                paintSlider();
+            });
+            hold(slider, () -> choose(slider.getValue()));
+            HBox guide = name.equals("Filter")
+                    ? new HBox(caption("LOW PASS"), spacer(), caption("OFF"), spacer(), caption("HIGH PASS"))
+                    : new HBox(caption("DRY"), spacer(), caption(name.equals("Dub") ? "FEEDBACK" : "VOWEL"));
+            card.getChildren().addAll(slider, guide);
+        } else {
+            slider = null;
+            HBox row = new HBox(4);
+            for (int i = 0; i < zones.size(); i++) {
+                int zone = i;
+                Button button = new Button(zones.get(i));
+                button.setId("fx-stutter-zone-" + i); button.setAccessibleText("Stutter " + zones.get(i));
+                button.getStyleClass().add("fx-zone");
+                button.setMinWidth(0); button.setMaxWidth(Double.MAX_VALUE); HBox.setHgrow(button, Priority.ALWAYS);
+                hold(button, () -> { chosen = zone; choose(zone); });
+                buttons.add(button); row.getChildren().add(button);
+            }
+            card.getChildren().add(row);
         }
-        return Math.max(0, Math.min(zones.size() - 1, (int) (x / width * zones.size())));
+        card.addEventFilter(MouseEvent.MOUSE_PRESSED, event -> {
+            if (event.getButton() == MouseButton.SECONDARY) {
+                lock.setSelected(!lock.isSelected()); choose(lock.isSelected() ? chosen : OFF); event.consume();
+            }
+        });
     }
+
+    Node node() { return card; }
+
+    /** Stop and Release FX clear locks as well as the held effects. */
+    void release() { pressing = false; lock.setSelected(false); chosen = neutral; choose(OFF); }
+
+    private void hold(Node control, Runnable start) {
+        control.addEventFilter(MouseEvent.MOUSE_PRESSED, event -> {
+            if (event.getButton() == MouseButton.PRIMARY) { pressing = true; start.run(); }
+        });
+        control.addEventFilter(MouseEvent.MOUSE_RELEASED, event -> {
+            if (event.getButton() == MouseButton.PRIMARY) endHold();
+        });
+        control.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+            if (event.getCode() == KeyCode.ENTER || control instanceof Slider
+                    && List.of(KeyCode.LEFT, KeyCode.RIGHT, KeyCode.HOME, KeyCode.END).contains(event.getCode())) {
+                pressing = true; start.run();
+            }
+        });
+        control.addEventFilter(KeyEvent.KEY_RELEASED, event -> { if (pressing) endHold(); });
+        control.focusedProperty().addListener((obs, was, focused) -> { if (!focused && pressing) endHold(); });
+    }
+
+    private void endHold() { pressing = false; if (!lock.isSelected()) choose(OFF); }
 
     private void choose(double value) {
-        if (value != active) {
-            active = value;
-            onChange.accept(value);
+        if (active != value) { active = value; onChange.accept(value); }
+        boolean sounding = value >= 0 && (!zones.isEmpty() || (name.equals("Filter") ? value != neutral : value > 0));
+        state.setText(!sounding ? "OFF" : zones.isEmpty() ? Math.round(value * 100) + "%" : zones.get((int) value));
+        card.pseudoClassStateChanged(PseudoClass.getPseudoClass("active"), sounding);
+        for (int i = 0; i < buttons.size(); i++) buttons.get(i).pseudoClassStateChanged(PseudoClass.getPseudoClass("active"), value == i);
+        if (slider != null) {
+            updating = true;
+            try { slider.setValue(value < 0 ? neutral : value); } finally { updating = false; }
+            paintSlider();
         }
-        draw();
     }
 
-    private void draw() {
-        double width = canvas.getWidth();
-        GraphicsContext g = canvas.getGraphicsContext2D();
-        g.clearRect(0, 0, width, HEIGHT);
-        g.setFill(FACE);
-        g.fillRoundRect(0, 0, width, HEIGHT, 12, 12);
-        Color fill = locked ? LOCKED : ON;
-        g.setTextAlign(TextAlignment.CENTER);
-        g.setTextBaseline(VPos.CENTER);
-        if (active < 0) {
-            g.setFill(TEXT);
-            g.setFont(Font.font(14));
-            g.fillText(name.toLowerCase(), width / 2, HEIGHT / 2);
-            return;
+    private void paintSlider() {
+        Node track = slider.lookup(".track");
+        if (track != null) {
+            double percent = slider.getValue() * 100;
+            track.setStyle("-fx-background-color: linear-gradient(to right, #db5830 0%, #db5830 " + percent
+                    + "%, #eeeeed " + percent + "%, #eeeeed 100%);");
         }
-        if (zones.isEmpty()) {
-            g.setFill(fill);
-            g.fillRoundRect(0, 0, Math.max(12, active * width), HEIGHT, 12, 12);
-            g.setFill(ON_TEXT);
-            g.setFont(Font.font(null, FontWeight.BOLD, 14));
-            g.fillText(name.toLowerCase(), width / 2, HEIGHT / 2);
-        } else {
-            double zone = width / zones.size();
-            g.setFill(fill);
-            g.fillRoundRect(active * zone, 0, zone, HEIGHT, 12, 12);
-            g.setFont(Font.font("Consolas", FontWeight.BOLD, 12));
-            for (int index = 0; index < zones.size(); index++) {
-                g.setFill(index == active ? ON_TEXT : TEXT);
-                g.fillText(zones.get(index), (index + 0.5) * zone, HEIGHT / 2);
-            }
-        }
+    }
+
+    private static Region spacer() { Region space = new Region(); HBox.setHgrow(space, Priority.ALWAYS); return space; }
+    private static Label caption(String text) {
+        Label label = new Label(text); label.setStyle("-fx-font: 9px Consolas; -fx-text-fill: #72746b;"); return label;
     }
 }

@@ -1,0 +1,12 @@
+.fx-card { -fx-background-color: #d5d3c8; -fx-background-radius: 7; -fx-border-color: #c5c2b5; -fx-border-radius: 7; }
+.fx-card:active { -fx-background-color: #f4dcc0; -fx-border-color: #d59263; }
+.fx-lock { -fx-background-color: transparent; -fx-padding: 2 3; -fx-font-size: 10px; -fx-text-fill: #6f6f64; }
+.fx-lock:selected { -fx-text-fill: #b24b25; -fx-font-weight: bold; }
+.fx-lock:focused { -fx-border-color: #db5830; -fx-border-radius: 3; }
+.fx-zone { -fx-background-color: #eae7de; -fx-border-color: #c5c2b5; -fx-border-radius: 5; -fx-background-radius: 5; -fx-padding: 5 3; -fx-font: 11px Consolas; }
+.fx-zone:active { -fx-background-color: #d85a30; -fx-text-fill: white; -fx-border-color: #bf4f2a; }
+.fx-zone:focused { -fx-border-color: #db5830; }
+.fx-slider .thumb { -fx-background-color: #db5830; -fx-background-radius: 10; -fx-padding: 7; }
+.fx-slider:focused .thumb { -fx-effect: dropshadow(gaussian, #f4ad87, 4, 0.5, 0, 0); }
+.fx-slider .track { -fx-background-color: #eeeeed; -fx-background-radius: 3; -fx-border-color: #aaaaa4; -fx-border-radius: 3; -fx-pref-height: 7; }
+.fx-filter-slider .track { -fx-background-color: linear-gradient(to right, #db5830 0%, #db5830 50%, #eeeeed 50%, #eeeeed 100%); }

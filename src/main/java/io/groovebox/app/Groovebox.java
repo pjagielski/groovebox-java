@@ -1329,6 +1329,7 @@ public final class Groovebox extends Application {
         showTransport();
         tempo.show(session.bpm());
         globalEffects = performance(); globalEffects.setId("global-effects");
+        globalEffects.setVisible(false);
         effectsShortcut = new Button("Global effects → Mixer");
         effectsShortcut.setOnAction(event -> showMixer(true));
         transport = new HBox(STRIP_GAP + 6, play, tempo.node(), effectsShortcut);
@@ -1344,7 +1345,7 @@ public final class Groovebox extends Application {
         }), () -> showMixer(false), track -> chooseMidiWindow(mixer.node(), track), () -> {
             showChips(); shown = "";
         });
-        mixerPane = new VBox(16, mixer.node());
+        mixerPane = new VBox(8, mixer.node(), globalEffects);
         mixerPane.setVisible(false); mixerPane.setManaged(false);
         StackPane viewsPane = new StackPane(instrumentView, mixerPane);
         viewsPane.setAlignment(Pos.TOP_LEFT);
@@ -1374,11 +1375,12 @@ public final class Groovebox extends Application {
 
     private void showMixer(boolean active) {
         mixing = active;
+        globalEffects.setVisible(active);
         instrumentView.getChildren().remove(transport);
         mixerPane.getChildren().remove(transport);
-        transport.getChildren().removeAll(globalEffects, effectsShortcut);
-        transport.getChildren().add(active ? globalEffects : effectsShortcut);
-        if (active) mixerPane.getChildren().add(transport);
+        transport.getChildren().removeAll(mixer.inspector(), effectsShortcut);
+        transport.getChildren().add(active ? mixer.inspector() : effectsShortcut);
+        if (active) mixerPane.getChildren().add(1, transport);
         else instrumentView.getChildren().add(1, transport);
         instrumentView.setVisible(!active); instrumentView.setManaged(!active);
         mixerPane.setVisible(active); mixerPane.setManaged(active);
@@ -1387,9 +1389,9 @@ public final class Groovebox extends Application {
         if (active) mixer.refresh(playback.live() == null ? MixLevels.SILENT : playback.live().levels());
     }
 
-    /** The effects played over the whole mix: a strip each, held to play, right-clicked to lock. */
+    /** The effects played over the whole mix, with explicit locks and one release for all cards. */
     private Node performance() {
-        double width = Math.floor((INSIDE - PLAY_WIDTH - Tempo.WIDTH - 2 * (STRIP_GAP + 6) - 3 * STRIP_GAP) / 4);
+        double width = (INSIDE - 24 - 3 * STRIP_GAP) / 4;
         double[] slices = {0.125, 0.25, 0.5, 1.0};
         strips.add(Strip.zones("Stutter", List.of("1/32", "1/16", "1/8", "1/4"), width, zone -> {
             var live = playback.live();
@@ -1418,7 +1420,20 @@ public final class Groovebox extends Application {
         }));
         HBox row = new HBox(STRIP_GAP);
         strips.forEach(strip -> row.getChildren().add(strip.node()));
-        return row;
+        Label title = new Label("Master FX");
+        title.setStyle("-fx-font-size: 13px; -fx-font-weight: bold; -fx-text-fill: " + Look.web(Look.INK) + ";");
+        Label hint = new Label("All tracks · hold to perform · Lock to keep");
+        hint.setStyle("-fx-font-size: 11px; -fx-text-fill: " + Look.web(Look.QUIET_INK) + ";");
+        Region gap = new Region(); HBox.setHgrow(gap, Priority.ALWAYS);
+        Button release = new Button("Release FX"); release.setId("release-fx");
+        release.setStyle("-fx-font-size: 11px; -fx-padding: 4 9;");
+        release.setOnAction(event -> strips.forEach(Strip::release));
+        HBox header = new HBox(8, title, hint, gap, release); header.setAlignment(Pos.CENTER_LEFT);
+        VBox panel = new VBox(8, header, row); panel.setPadding(new Insets(8, 12, 8, 12));
+        panel.setPrefHeight(122); panel.setMinHeight(122); panel.setMaxHeight(122);
+        panel.setStyle("-fx-background-color: #e4e1d7; -fx-border-color: #c5c2b5; -fx-border-radius: 11; -fx-background-radius: 11;");
+        panel.getStylesheets().add(Groovebox.class.getResource("master-fx.css").toExternalForm());
+        return panel;
     }
 
     private static void showError(Throwable failure) {
