@@ -51,7 +51,7 @@ public final class AudioEngine {
     private static final int CHANNELS = 2;
     private static final PitchSynth DEFAULT_SYNTH = new AnthemLeadSynth()::render;
 
-    private final SampleBank samples;
+    private volatile SampleBank samples;
     private final int sampleRate;
     private final int blockSize;
     private final int maxVoices;
@@ -61,6 +61,11 @@ public final class AudioEngine {
 
     public AudioEngine(SampleBank samples) {
         this(samples, DEFAULT_SAMPLE_RATE, DEFAULT_BLOCK_SIZE, DEFAULT_MAX_VOICES);
+    }
+
+    /** Publishes a complete drum kit; notes already sounding keep the samples they started with. */
+    public void setSampleBank(SampleBank next) {
+        samples = Objects.requireNonNull(next, "samples");
     }
 
     public AudioEngine(SampleBank samples, int sampleRate, int blockSize, int maxVoices) {
@@ -1473,18 +1478,19 @@ public final class AudioEngine {
     private record SynthKey(int midiNote, int frameCount) {
     }
 
-    private record ShapeKey(Drum drum, Envelope envelope, int heldFrames) {
+    private record ShapeKey(Sample sample, Envelope envelope, int heldFrames) {
     }
 
     /** A drum's sample, shaped by its note's envelope when it has one, rendered once per shape. */
     private Sample drumSample(Drum drum, Note note, Transport transport, Map<ShapeKey, Sample> cache) {
+        Sample sample = samples.sample(drum);
         Envelope envelope = note.envelope();
         if (!envelope.shapes()) {
-            return samples.sample(drum);
+            return sample;
         }
         int heldFrames = envelope.releaseSeconds() > 0.0 ? (int) transport.frameAtBeat(note.durationBeats()) : -1;
-        return cache.computeIfAbsent(new ShapeKey(drum, envelope, heldFrames),
-                key -> samples.sample(drum).shaped(envelope, key.heldFrames(), sampleRate));
+        return cache.computeIfAbsent(new ShapeKey(sample, envelope, heldFrames),
+                key -> key.sample().shaped(envelope, key.heldFrames(), sampleRate));
     }
 
     /** One sounding note: either a rendered {@link Sample} played back, or a live {@link VoiceSource}. */

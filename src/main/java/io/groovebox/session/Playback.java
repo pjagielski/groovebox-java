@@ -2,10 +2,14 @@ package io.groovebox.session;
 
 import io.groovebox.audio.AudioEngine;
 import io.groovebox.audio.NoteListener;
+import io.groovebox.audio.SampleBank;
 import io.groovebox.midi.ExternalMidiOutput;
 
 import javax.sound.sampled.LineUnavailableException;
 import java.util.function.Supplier;
+import java.nio.file.Path;
+import java.io.IOException;
+import javax.sound.sampled.UnsupportedAudioFileException;
 
 /**
  * Play and stop for a jam, and the audio device behind them. Playing takes the device; stopping
@@ -37,6 +41,19 @@ public final class Playback {
 
     public boolean playing() {
         return live != null;
+    }
+
+    /** Loads all files before replacing the kit, leaving the current sounds intact if a file fails. */
+    public SampleBank loadDrumKit(Path directory) throws IOException, UnsupportedAudioFileException {
+        SampleBank kit = SampleBank.loadKit(directory, AudioEngine.DEFAULT_SAMPLE_RATE);
+        useDrumKit(kit);
+        return kit;
+    }
+
+    /** A prepared kit replaces the drum sounds without changing the jam or the MIDI connection. */
+    public void useDrumKit(SampleBank kit) {
+        engine.setSampleBank(kit);
+        takeNow();
     }
 
     /** The jam as it plays, for where it is and for the effects played over it; null while stopped. */
