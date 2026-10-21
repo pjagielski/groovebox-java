@@ -52,7 +52,7 @@ The workflow can also be started manually from the Actions tab.
 - **Performance strips in Mixer.** Stutter, filter, dub and talkbox act on the whole mix. Hold a strip
   using its buttons or slider, let go and the effect stops. **Lock** keeps the setting;
   right-click also toggles the lock. **Release FX** clears every lock and releases all four
-  effects. Stutter offers four beat divisions, and the sliders show their direction below them.
+  effects. Stutter offers 1/16, 1/8, 1/4 and 1/2 divisions; the sliders show their direction below them.
 - **MIDI in a jam.** `+ MIDI` lets you choose one track, its range and repeat setting from each
   file. Preview it in the overview and piano roll, or use **Listen range** before **Add track**.
   Only that part is added, with its own synth and MIDI channel. Audition pauses a playing jam

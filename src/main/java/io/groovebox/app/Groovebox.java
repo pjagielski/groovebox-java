@@ -1390,8 +1390,8 @@ public final class Groovebox extends Application {
     /** The effects played over the whole mix, with explicit locks and one release for all cards. */
     private Node performance() {
         double width = (INSIDE - 24 - 3 * STRIP_GAP) / 4;
-        double[] slices = {0.125, 0.25, 0.5, 1.0};
-        strips.add(Strip.zones("Stutter", List.of("1/32", "1/16", "1/8", "1/4"), width, zone -> {
+        double[] slices = {0.25, 0.5, 1.0, 2.0};
+        strips.add(Strip.zones("Stutter", List.of("1/16", "1/8", "1/4", "1/2"), width, zone -> {
             var live = playback.live();
             if (live != null) {
                 live.stutter(zone < 0 ? 0 : slices[(int) zone]);
