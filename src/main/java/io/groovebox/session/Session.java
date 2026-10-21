@@ -87,7 +87,7 @@ public final class Session {
      * jam before it is gone, and so is its history: an undo never brings back another jam's tracks.
      */
     public void load(Path config) throws Exception {
-        JamConfig next = JamConfig.fromPropertiesFile(config);
+        JamConfig next = JamConfig.fromFile(config);
         Path file = legacyMidiFile(config, next.file());
         Sequence nextSequence = sequenceOf(file);
         PitchSynth nextSynth = Sounds.resolveSynth(next.synth());
@@ -198,14 +198,14 @@ public final class Session {
 
     public void setDrumSamplesFolder(Path folder) { drumSamplesFolder = folder; }
 
-    /** Writes the whole workspace, including the instruments' current knobs, to a properties file. */
+    /** Writes the whole workspace, including the instruments' current knobs, to YAML or a legacy properties file. */
     public void save(Path file) throws Exception {
         SessionFile.write(this, file);
     }
 
     /** Opens a complete workspace or an older single-MIDI config, returning its prepared custom kit, or null. */
     public SampleBank open(Path file) throws Exception {
-        var properties = SessionFile.readProperties(file);
+        var properties = SessionFile.readDocument(file);
         Session draft = new Session();
         SampleBank preparedKit = null;
         if (!properties.containsKey("session.version")) {

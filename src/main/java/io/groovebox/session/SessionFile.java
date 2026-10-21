@@ -12,13 +12,14 @@ import java.lang.reflect.RecordComponent;
 import java.util.*;
 import java.io.IOException;
 
-/** A versioned properties document for the entire workspace, with asset paths relative to its file. */
+/** A versioned workspace document, with YAML output and legacy properties compatibility. */
 final class SessionFile {
     record State(double bpm, double bars, Scale scale, String chords, String code,
                  List<StudioTrack> tracks, int selected, List<GridRow> rows, Path drumFolder,
                  float masterGain, boolean masterMuted) {}
 
     private final Properties properties;
+    private final Map<String, Object> fields = new LinkedHashMap<>();
     private final Path base;
 
     private SessionFile(Properties properties, Path file) {
@@ -30,6 +31,10 @@ final class SessionFile {
         Properties p = new Properties();
         try (var reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) { p.load(reader); }
         return p;
+    }
+
+    static Properties readDocument(Path file) throws IOException {
+        return SessionYaml.accepts(file) ? SessionYaml.read(file) : readProperties(file);
     }
 
     static void write(Session session, Path file) throws Exception {
@@ -66,7 +71,8 @@ final class SessionFile {
         Path temporary = Files.createTempFile(destination.getParent(), ".groovebox-", ".tmp");
         try {
             try (var writer = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
-                document.properties.store(writer, "groovebox session - version 1; paths relative to this file");
+                if (SessionYaml.accepts(file)) SessionYaml.write(writer, document.fields);
+                else document.properties.store(writer, "groovebox session - version 1; paths relative to this file");
             }
             try { Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
             catch (AtomicMoveNotSupportedException unsupported) {
@@ -247,7 +253,11 @@ final class SessionFile {
         return type.getDeclaredConstructor(types).newInstance(values);
     }
 
-    private void put(String key, Object value) { properties.setProperty(key, value instanceof Enum<?> e ? e.name() : value.toString()); }
+    private void put(String key, Object value) {
+        Object scalar = value instanceof Enum<?> e ? e.name() : value;
+        fields.put(key, scalar);
+        properties.setProperty(key, scalar.toString());
+    }
     private void putPath(String key, Path file) {
         Path absolute = file.toAbsolutePath().normalize();
         try { put(key, base.relativize(absolute).toString().replace('\\', '/')); }

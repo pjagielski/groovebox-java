@@ -114,14 +114,14 @@ folder is restored when a saved session is opened.
 
 ## Session files
 
-**File → Save session** (Ctrl+S) writes the entire workspace to a UTF-8 `.properties` file.
+**File → Save session** (Ctrl+S) writes the entire workspace to a UTF-8 YAML file (`.yml` or `.yaml`).
 **Save session as...** (Ctrl+Shift+S) chooses another file; **Open session...** (Ctrl+O)
 restores it and leaves playback stopped. A failed open leaves the current workspace intact.
 Opening a session starts a fresh undo history.
 
-The document extends the single-MIDI `jam.properties` format with `session.version=1`,
-`bpm`, `bars`, `key`, `scale`, `chords`, `code`, `tracks.count` and numbered `track.0.*`
-and `row.0.*` properties. It keeps track names and order, selection, gain, mute and solo,
+The document uses nested settings and lists: `session.version`, `master`, `tracks.selected`,
+`tracks.items` and `rows`. Notes and drum accents are lists too, with numbers and booleans
+written as native YAML values. It keeps track names and order, selection, gain, mute and solo,
 MIDI source tracks and exact beat ranges, repeat settings, edited notes, audio loops and their
 slice order, every synth and effect parameter, delay synchronization and each instrument's
 external MIDI routing. The drum grid includes accents, tuning, envelopes and row effects.
@@ -129,10 +129,11 @@ A custom drum kit's folder is also saved.
 
 MIDI, audio and drum samples remain external files, with paths relative to the session file
 where possible. Move those files together with the session to keep the project usable.
-Edited notes and demo notes are written into the session itself. Older single-MIDI configs
-with `file`, `track`, `fromBar`, `bars`, `synth` and `drums` can still be opened, using the
-patches and drum patterns available in this app; saving them writes the full session format.
-`--config` accepts both formats.
+Edited notes and demo notes are written into the session itself. Existing `.properties`
+sessions and older single-MIDI configs can still be opened. Saving an opened properties
+file offers a `.yml` destination, keeping the old file intact. Simple YAML configs can use
+`file`, `track`, `fromBar`, `bars`, `synth` and `drums`; saving them writes the full session.
+`--config` accepts YAML and legacy properties files.
 MusicJam's `shape`, `worry`, `dre`, `giorgio` and `insomnia` pattern names are recognized.
 Older project-relative MIDI paths are searched from the config's directory and its ancestors,
 so the examples under `../musicjam/src/main/resources` can be opened directly.
@@ -141,16 +142,19 @@ The old `loops` option belongs to MusicJam's finite playback; this box repeats u
 A jam can also start from a config naming a MIDI file for its melody:
 
 ```
-./gradlew run --args="--config path/to/jam.properties"
+./gradlew run --args="--config path/to/jam.yml"
 ```
 
+```yaml
+file: song.mid
+track: 1
+bars: 2
+synth: pluck
+drums: disco
 ```
-file=song.mid
-track=1
-bars=2
-synth=pluck
-drums=disco
-```
+
+See [examples/jam.yml](examples/jam.yml) for a commented starting point. Replace its MIDI path
+with your own file; MIDI files are not shipped with the app.
 
 ## License
 

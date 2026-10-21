@@ -1181,18 +1181,35 @@ public final class Groovebox extends Application {
         trackScroll.setHvalue(0);
     }
 
-    private FileChooser projectChooser() {
+    private FileChooser projectChooser(boolean saving) {
         FileChooser chooser = new FileChooser();
-        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Groovebox sessions", "*.properties"));
+        if (saving) {
+            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("YAML sessions", "*.yml", "*.yaml"));
+        } else {
+            chooser.getExtensionFilters().addAll(
+                    new FileChooser.ExtensionFilter("Groovebox sessions", "*.yml", "*.yaml", "*.properties"),
+                    new FileChooser.ExtensionFilter("YAML sessions", "*.yml", "*.yaml"),
+                    new FileChooser.ExtensionFilter("Legacy properties", "*.properties"));
+        }
         if (projectFile != null && Files.isDirectory(projectFile.getParent())) {
             chooser.setInitialDirectory(projectFile.getParent().toFile());
-            chooser.setInitialFileName(projectFile.getFileName().toString());
-        } else chooser.setInitialFileName("jam.properties");
+            String name = projectFile.getFileName().toString();
+            if (saving && !yamlProject(projectFile)) {
+                int dot = name.lastIndexOf('.');
+                name = (dot < 0 ? name : name.substring(0, dot)) + ".yml";
+            }
+            chooser.setInitialFileName(name);
+        } else chooser.setInitialFileName("jam.yml");
         return chooser;
     }
 
+    private static boolean yamlProject(Path path) {
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".yml") || name.endsWith(".yaml");
+    }
+
     private void chooseProject(Node owner) {
-        FileChooser chooser = projectChooser();
+        FileChooser chooser = projectChooser(false);
         chooser.setTitle("Open session");
         File chosen = chooser.showOpenDialog(owner.getScene().getWindow());
         if (chosen != null) {
@@ -1214,14 +1231,14 @@ public final class Groovebox extends Application {
 
     private void saveProject(Node owner, boolean chooseFile) {
         Path target = projectFile;
-        if (chooseFile || target == null) {
-            FileChooser chooser = projectChooser();
+        if (chooseFile || target == null || !yamlProject(target)) {
+            FileChooser chooser = projectChooser(true);
             chooser.setTitle("Save session");
             File chosen = chooser.showSaveDialog(owner.getScene().getWindow());
             if (chosen == null) return;
             target = chosen.toPath();
-            if (!target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".properties")) {
-                target = target.resolveSibling(target.getFileName() + ".properties");
+            if (!yamlProject(target)) {
+                target = target.resolveSibling(target.getFileName() + ".yml");
             }
         }
         try {

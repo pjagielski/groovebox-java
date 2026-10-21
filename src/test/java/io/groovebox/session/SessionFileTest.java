@@ -4,6 +4,8 @@ import io.groovebox.model.*;
 import io.groovebox.synth.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import java.nio.file.*;
 import java.util.List;
 import java.util.Map;
@@ -32,8 +34,9 @@ class SessionFileTest {
         assertEquals(1, after.masterGain()); assertFalse(after.masterMuted());
     }
 
-    @Test
-    void theWholeDemoAndEveryInstrumentSettingSurviveARoundTrip() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"properties", "yml", "yaml"})
+    void theWholeDemoAndEveryInstrumentSettingSurviveARoundTrip(String format) throws Exception {
         Session before = new Session();
         DemoJam.startIn(before);
         before.setBpm(93);
@@ -52,7 +55,7 @@ class SessionFileTest {
                 .withCutoff(333).withResonance(0.4f), bass.setting().effects().withDelayMix(0.31f), "FREE"));
         bass.setMidi(4, 71, 55);
         bass.setExternal(true);
-        Path file = directory.resolve("sesja.properties");
+        Path file = directory.resolve("sesja." + format);
         before.save(file);
 
         Session after = new Session();
@@ -90,8 +93,10 @@ class SessionFileTest {
         assertFalse(after.undo());
     }
 
-    @Test
-    void midiRangesAudioSlicesAndTheKitCanMoveWithTheProject() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"properties", "yml", "yaml"})
+    void midiRangesAudioSlicesAndTheKitCanMoveWithTheProject(String format) throws Exception {
+        String sessionName = "jam." + format;
         Path original = Files.createDirectory(directory.resolve("original"));
         Path midi = midi(original.resolve("bas i trąbki.mid"));
         Path audio = original.resolve("loop.wav");
@@ -109,16 +114,16 @@ class SessionFileTest {
         loop.channel().setParams(EffectParams.DRY.withCrush(0.4f).withDelayMix(0.3f));
         before.addTrack(loop);
         before.setDrumSamplesFolder(kit);
-        before.save(original.resolve("jam.properties"));
-        Properties properties = SessionFile.readProperties(original.resolve("jam.properties"));
+        before.save(original.resolve(sessionName));
+        Properties properties = SessionFile.readDocument(original.resolve(sessionName));
         assertEquals("bas i trąbki.mid", properties.getProperty("track.1.window.file"));
         assertEquals("loop.wav", properties.getProperty("track.2.file"));
         Path moved = Files.createDirectory(directory.resolve("moved"));
-        for (String name : List.of("jam.properties", "bas i trąbki.mid", "loop.wav"))
+        for (String name : List.of(sessionName, "bas i trąbki.mid", "loop.wav"))
             Files.copy(original.resolve(name), moved.resolve(name));
         Files.createDirectory(moved.resolve("kit")); Files.copy(kit.resolve("kick.wav"), moved.resolve("kit/kick.wav"));
 
-        Session after = new Session(); after.open(moved.resolve("jam.properties"));
+        Session after = new Session(); after.open(moved.resolve(sessionName));
 
         var restored = (StudioTrack.Melody)after.tracks().get(1);
         assertEquals("Trąbki 🎺", restored.name());
@@ -134,7 +139,7 @@ class SessionFileTest {
         assertEquals(moved.resolve("kit"), after.drumSamplesFolder());
 
         var previous = after.jam(); Files.delete(moved.resolve("bas i trąbki.mid"));
-        assertThrows(Exception.class, () -> after.open(moved.resolve("jam.properties")));
+        assertThrows(Exception.class, () -> after.open(moved.resolve(sessionName)));
         assertSame(previous, after.jam());
     }
 
@@ -168,10 +173,11 @@ class SessionFileTest {
             assertTrue(Sounds.drumPatterns().containsKey(pattern));
     }
 
-    @Test
-    void anEmptyWorkspaceAndEditedNotesWithTheirMidiOriginCanBeSaved() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"properties", "yml", "yaml"})
+    void anEmptyWorkspaceAndEditedNotesWithTheirMidiOriginCanBeSaved(String format) throws Exception {
         Session session = new Session(); session.startEmpty();
-        Path file = directory.resolve("empty.properties"); session.save(file);
+        Path file = directory.resolve("empty." + format); session.save(file);
         Session restored = new Session(); restored.open(file);
         assertEquals(1, restored.tracks().size());
         assertTrue(GridRow.notes(restored.rows(), 4, 32).isEmpty());

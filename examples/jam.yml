@@ -1,0 +1,10 @@
+# Replace this with your MIDI file, relative to this config's directory.
+file: song.mid
+track: 1
+fromBar: 0
+bars: 8
+synth: pluck
+drums: disco
+delay: 0.2
+# Optional: a folder of audio loops, relative to this config.
+# loopsFolder: loops

@@ -28,6 +28,7 @@ val javafxPlatform = System.getProperty("os.name").lowercase().let { os ->
 }
 
 dependencies {
+    implementation("org.snakeyaml:snakeyaml-engine:3.1.1")
     listOf("base", "graphics", "controls").forEach {
         implementation("org.openjfx:javafx-$it:$javafxVersion:$javafxPlatform")
     }

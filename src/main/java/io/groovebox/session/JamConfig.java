@@ -1,8 +1,6 @@
 package io.groovebox.session;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Properties;
@@ -13,8 +11,8 @@ import java.util.Properties;
  * send the melody to instead. And where the jam's loops are kept ({@code loopsFolder}), for a
  * chooser of loops to open in; null when it does not say.
  *
- * <p>Two ways to build one: fluent ({@link #forFile}), or from a {@code .properties} file
- * ({@link #fromPropertiesFile}).
+ * <p>Two ways to build one: fluent ({@link #forFile}), or from YAML or a legacy properties file
+ * ({@link #fromFile}).
  */
 public record JamConfig(
         Path file, int trackIndex, int startBar, int bars, String synth, String drums,
@@ -52,10 +50,12 @@ public record JamConfig(
     }
 
     public static JamConfig fromPropertiesFile(Path path) throws IOException {
-        Properties properties = new Properties();
-        try (InputStream in = Files.newInputStream(path)) {
-            properties.load(in);
-        }
+        return fromFile(path);
+    }
+
+    /** Reads a hand-edited YAML config or an older MusicJam properties file. */
+    public static JamConfig fromFile(Path path) throws IOException {
+        Properties properties = SessionFile.readDocument(path);
         String file = properties.getProperty("file");
         if (file == null) {
             throw new IllegalArgumentException("Config file " + path + " is missing \"file\"");
