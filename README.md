@@ -53,26 +53,16 @@ The workflow can also be started manually from the Actions tab.
   using its buttons or slider, let go and the effect stops. **Lock** keeps the setting;
   right-click also toggles the lock. **Release FX** clears every lock and releases all four
   effects. Stutter offers four beat divisions, and the sliders show their direction below them.
-- **MIDI in a jam.** `+ MIDI` opens a part chooser for each selected file, with a piano roll
-  and audition before **Add track**. Only the chosen file track and range are added, with its own
-  synth and MIDI channel; other parts are left out. Cancel leaves the jam unchanged. The jam
-  keeps its tempo; its length changes only if you edit **Jam length** in the chooser.
-  The track strip scrolls when more tracks are added.
-  A jam can also start with a MIDI melody from a config.
-  Right-click an imported track and choose **MIDI loop...** to select its file track, its **From
-  bar** and **Through bar**, and whether that range repeats inside the jam. Both bar numbers are
-  inclusive: 5–8 plays four bars, starting at the fifth bar of the file. Each track keeps its own
-  range and repeat setting. With repeat off, the range plays once per jam pass. **Jam length**
-  sets the shared pass length for all tracks; longer ranges are cut at that boundary. Changing
-  the source or range keeps the track's sound, mute and solo.
-  The dialog shows a file overview with the selected bars highlighted, and a piano roll of the
-  range. Drag across the overview to choose bars. **Listen range** auditions the excerpt once,
-  with the track's current sound, before applying it. **Stop preview**, changing the selection,
-  or closing the dialog stops the audition. A playing jam pauses for the audition and resumes
-  when the dialog closes; auditioning never edits the jam.
-  **Start beat** and **End beat** allow exact boundaries between bar lines, counting beats from
-  zero. For a pickup just before bar 2, use start **3.75** (or **3,75**); an end of **7.75** gives a
-  four-beat loop. The bar fields and beat fields stay in sync. End beat is exclusive.
+- **MIDI in a jam.** `+ MIDI` lets you choose one track, its range and repeat setting from each
+  file. Preview it in the overview and piano roll, or use **Listen range** before **Add track**.
+  Only that part is added, with its own synth and MIDI channel. Audition pauses a playing jam
+  and resumes it when the dialog closes.
+  Right-click a track → **MIDI loop...** to edit its source or range while keeping its sound.
+  **From bar** and **Through bar** are inclusive: 5–8 plays four bars. For finer boundaries,
+  **Start beat** and **End beat** count from zero, with the end exclusive: **3.75–7.75** gives
+  a four-beat loop, including a pickup just before bar 2. Decimal commas also work.
+  Import keeps the jam's tempo. **Jam length** sets the shared pass length; longer ranges are
+  cut at that boundary. With repeat off, the chosen range plays once per jam pass.
 
 Nothing is shipped but code: no samples, no MIDI files, no native libraries.
 
