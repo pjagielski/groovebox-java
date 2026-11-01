@@ -5,14 +5,6 @@ in code. JavaFX for the box, Java Sound for the output, no native audio librarie
 
 Work in progress.
 
-`./gradlew test` runs the offline suite without an audio device. `./gradlew uiGestureTest`
-checks the Master FX sliders with real JavaFX mouse gestures, including right-click locking
-and dragging. That additional check requires a display, opens a small window, and plays no audio.
-
-GitHub Actions runs both checks on pull requests and pushes to `main`, using JDK 25 and a
-virtual display for JavaFX. Each run uploads the offline test reports as `test-reports`.
-The workflow can also be started manually from the Actions tab.
-
 ![The box with a drum loop cut into sixteen slices, one to a pad](docs/loop.png)
 
 ## What is in the box
@@ -155,6 +147,15 @@ drums: disco
 
 See [examples/jam.yml](examples/jam.yml) for a commented starting point. Replace its MIDI path
 with your own file; MIDI files are not shipped with the app.
+
+## Testing
+`./gradlew test` runs the offline suite without an audio device. `./gradlew uiGestureTest`
+checks the Master FX sliders with real JavaFX mouse gestures, including right-click locking
+and dragging. That additional check requires a display, opens a small window, and plays no audio.
+
+GitHub Actions runs both checks on pull requests and pushes to `main`, using JDK 25 and a
+virtual display for JavaFX. Each run uploads the offline test reports as `test-reports`.
+The workflow can also be started manually from the Actions tab.
 
 ## License
 
